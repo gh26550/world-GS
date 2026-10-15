@@ -6,6 +6,8 @@ from PIL import Image
 
 def train(path, steps=1000, max_points=100000):
     import torch
+    from .runtime import validate_torch_location
+    validate_torch_location(torch.__file__)
     from gsplat import rasterization
     if steps < 1 or max_points < 1:
         raise ValueError('steps and max_points must be positive')

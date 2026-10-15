@@ -15,7 +15,7 @@ WSL Ubuntu 22.04、RTX 5070 Ti 16GBで実行。主要バージョンは `environ
 
 ```bash
 ./run.sh generate --prompt 'A cozy living room with a wooden table, bookshelves and a blue sofa, interior photograph, wide angle' --output runs/livingroom_v1 --size 512 --views 12 --seed 42
-.venv/bin/python -m worldgs.audit runs/livingroom_v1
+~/.venvs/world-gs/bin/python -m worldgs.audit runs/livingroom_v1
 ./run.sh train runs/livingroom_v1 --steps 1500 --max-points 83285
 ```
 

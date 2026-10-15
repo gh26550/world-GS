@@ -4,30 +4,30 @@
 
 ## セットアップ (Ubuntu / WSL)
 
-CUDAに適合するPyTorchを先にインストールしてください。gsplatのCUDA拡張にはCUDA toolkitとC++コンパイラが必要です。
+Python 3.10〜3.12、CUDA toolkit（12.8推奨）とC++コンパイラが必要です。プロジェクトは `world GS` に保存できますが、**仮想環境は空白を含まない `~/.venvs/world-gs` に作ります**。プロジェクト内で `python -m venv .venv` を実行すると、gsplatのリンク処理が空白で分断される場合があります。既存の `.venv` への再作成はPythonの混在も招くため行わないでください。
 
 ```bash
 cd '/home/dpc7/world GS'
-python -m venv .venv
-source .venv/bin/activate
-pip install -e '.[generation,training]'
-worldgs generate --prompt 'A cozy living room with a sofa, bookshelves and a wooden table, wide angle interior photograph' --output runs/livingroom --seed 42
-worldgs train runs/livingroom --steps 1000
+bash setup.sh
+./run.sh generate --prompt 'A cozy living room with a sofa, bookshelves and a wooden table, wide angle interior photograph' --output runs/livingroom --seed 42
+./run.sh train runs/livingroom --steps 1000
 ```
 
 初回はHugging Faceからモデルを取得します。モデル利用条件を各配布元で確認してください。画像生成にはSD1.5、補完にはSD1.5 Inpainting、深度にはDepth Anything V2 Smallを使用します。モデルは段階ごとに解放し、VRAM使用量を抑えます。キャッシュ済みモデルがあることは全モデルが利用可能なことを意味しません。
 
 ## 軽量な動作確認
 
-このPCでは専用 `.venv` を作成済みです。RTX 5070 Ti用のCUDA設定を含む `./run.sh generate ...`、`./run.sh train ...` でも実行できます。他のGPUでは `TORCH_CUDA_ARCH_LIST` を適切に設定してください。使用環境の主要バージョンは `docs/environment-tested.txt` に記録します。
+`setup.sh` はPyTorch 2.7.1/cu128などを固定し、`run.sh` は仮想環境を明示して起動します。学習時は実GPUからCUDAアーキテクチャを検出するので、古い `TORCH_CUDA_ARCH_LIST=8.9` は引き継ぎません。RTX 5070 Tiでは12.0になります。意図的な上書きは `WORLDGS_CUDA_ARCH`、環境の変更は `WORLDGS_VENV`、初回作成のPython指定は `PYTHON_BIN` を使用します。
 
 ```bash
-python -m unittest discover -s tests -v
-worldgs generate --prompt test --output runs/smoke --demo --size 64 --views 8
-worldgs train runs/smoke --steps 20 --max-points 2000
+~/.venvs/world-gs/bin/python -m unittest discover -s tests -v
+./run.sh generate --prompt test --output runs/smoke --demo --size 64 --views 8
+./run.sh train runs/smoke --steps 20 --max-points 2000
 ```
 
 `--demo` は合成色画像・一定深度を使う統合検証専用です。プロンプトの意味を反映したシーン生成の成功例として扱わないでください。
+
+画像生成が済み `runs/livingroom/scene.json` と `points.npz` が存在する場合は、セットアップ後に `./run.sh train runs/livingroom --steps 1000` だけ実行できます。画像を作り直す必要はありません。`cannot find GS/.venv/.../torch/lib` は空白を含む仮想環境が原因です。環境を外へ新規作成し、古い `.venv` は削除せず保持できます。単に元の `cd` の引用符を増やしても、生成されたリンカ引数は修正されません。
 
 ## 出力
 
