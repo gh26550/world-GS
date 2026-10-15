@@ -1,0 +1,11 @@
+{
+  "steps": 1000,
+  "points": 109560,
+  "first_l1": 0.10087274760007858,
+  "last_l1": 0.006269614677876234,
+  "last_depth_log_l1": 0.008390404284000397,
+  "geometry_constrained": true,
+  "demo": false,
+  "note": "fixed point count, SH0; no densification; losses are training-view errors",
+  "max_surface_normal_displacement": 0.0
+}

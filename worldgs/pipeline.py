@@ -54,8 +54,58 @@ class Models:
         self.torch.cuda.empty_cache()
         return Image.fromarray(result)
 
+    def detect(self, image, prompt):
+        import inspect
+        from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection
+        vocabulary = [('sofa', ('sofa', 'couch')), ('table', ('table',)), ('bookshelf', ('bookshel', 'bookcase')),
+                      ('chair', ('chair',)), ('bed', ('bed',)), ('cabinet', ('cabinet',))]
+        labels = [label for label, words in vocabulary if any(word in prompt.lower() for word in words)] or ['sofa', 'table', 'bookshelf']
+        processor = AutoProcessor.from_pretrained('IDEA-Research/grounding-dino-tiny')
+        model = AutoModelForZeroShotObjectDetection.from_pretrained('IDEA-Research/grounding-dino-tiny').to(self.device)
+        inputs = processor(images=image, text='. '.join(labels)+'.', return_tensors='pt').to(self.device)
+        with self.torch.no_grad():
+            outputs = model(**inputs)
+        threshold = 'box_threshold' if 'box_threshold' in inspect.signature(processor.post_process_grounded_object_detection).parameters else 'threshold'
+        result = processor.post_process_grounded_object_detection(outputs, inputs.input_ids, target_sizes=[image.size[::-1]], text_threshold=.25, **{threshold: .30})[0]
+        names = result.get('text_labels', result.get('labels'))
+        detections = [{'box': box.cpu().tolist(), 'label': str(label), 'score': float(score)} for box, label, score in zip(result['boxes'], names, result['scores'])]
+        selected = []
+        for detection in sorted(detections, key=lambda d: -d['score']):
+            a = np.array(detection['box'])
+            duplicate = False
+            for other in selected:
+                b = np.array(other['box'])
+                inter = np.maximum(0, np.minimum(a[2:], b[2:])-np.maximum(a[:2], b[:2])).prod()
+                union = (a[2:]-a[:2]).prod()+(b[2:]-b[:2]).prod()-inter
+                duplicate |= inter/max(union, 1) > .6
+            if not duplicate:
+                selected.append(detection)
+        del model, processor, outputs, inputs
+        gc.collect()
+        self.torch.cuda.empty_cache()
+        return selected[:8]
 
-def generate(prompt, output, size=512, views=24, seed=0, demo=False):
+    def controlled_complete(self, prompt, rgb, missing, depth, index, negative_prompt=''):
+        from diffusers import ControlNetModel, StableDiffusionControlNetInpaintPipeline
+        if not hasattr(self, 'control_pipe'):
+            control = ControlNetModel.from_pretrained('lllyasviel/control_v11f1p_sd15_depth', torch_dtype=self.dtype)
+            self.control_pipe = StableDiffusionControlNetInpaintPipeline.from_pretrained(
+                'stable-diffusion-v1-5/stable-diffusion-inpainting', controlnet=control, torch_dtype=self.dtype).to(self.device)
+            self.control_pipe.enable_attention_slicing()
+        inverse = 1/np.maximum(depth, .05)
+        lo, hi = np.percentile(inverse, [1, 99])
+        condition = np.uint8(np.clip((inverse-lo)/max(hi-lo, 1e-6), 0, 1)*255)
+        result = self.control_pipe(prompt=prompt, negative_prompt='distorted walls, warped room, duplicate furniture, fisheye, text, '+negative_prompt,
+            image=Image.fromarray(rgb), mask_image=Image.fromarray(np.uint8(missing)*255),
+            control_image=Image.fromarray(condition).convert('RGB'), width=rgb.shape[1], height=rgb.shape[0],
+            num_inference_steps=25, guidance_scale=6., controlnet_conditioning_scale=1.,
+            generator=self.torch.Generator(self.device).manual_seed(self.seed+index)).images[0]
+        image = np.asarray(result).copy()
+        image[~missing] = rgb[~missing]
+        return Image.fromarray(image)
+
+
+def generate_legacy(prompt, output, size=512, views=24, seed=0, demo=False):
     if size < 64 or size % 8 or views < 8:
         raise ValueError('size must be >=64 and divisible by 8; views must be >=8')
     output = Path(output)
@@ -118,3 +168,12 @@ def generate(prompt, output, size=512, views=24, seed=0, demo=False):
     metadata = {'prompt': prompt, 'seed': seed, 'demo': demo, 'size': size, 'K': K.tolist(), 'convention': 'OpenCV camera-to-world; x right, y down, z forward', 'frames': frames, 'limitations': ['relative scale', 'rotation-only views constrain parallax poorly', 'unseen geometry is hallucinated', 'no semantic object separation']}
     (output/'scene.json').write_text(json.dumps(metadata, indent=2), encoding='utf-8')
     return metadata
+
+
+def generate(prompt, output, size=512, views=24, seed=0, demo=False, mode='room', front_image=None, room_size=(6., 3., 6.)):
+    if mode == 'legacy':
+        if front_image is not None:
+            raise ValueError('--front-image is supported only in room mode')
+        return generate_legacy(prompt, output, size, views, seed, demo)
+    from .room_pipeline import generate_room
+    return generate_room(prompt, output, size, views, seed, demo, front_image, room_size)

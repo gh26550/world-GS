@@ -1,0 +1,30 @@
+{
+  "reference": "proxy atlas; not independent ground truth",
+  "cameras_excluded_from_training": true,
+  "frames": [
+    {
+      "camera": 0,
+      "evaluated_fraction": 0.9749565124511719,
+      "rgb_l1_observed": 0.031078618871669992,
+      "depth_relative_error": 0.01289153378456831
+    },
+    {
+      "camera": 1,
+      "evaluated_fraction": 0.9954948425292969,
+      "rgb_l1_observed": 0.015064284334929158,
+      "depth_relative_error": 0.007621522527188063
+    },
+    {
+      "camera": 2,
+      "evaluated_fraction": 0.9863433837890625,
+      "rgb_l1_observed": 0.02093406995238434,
+      "depth_relative_error": 0.007225807290524244
+    },
+    {
+      "camera": 3,
+      "evaluated_fraction": 0.9864349365234375,
+      "rgb_l1_observed": 0.025050941679157075,
+      "depth_relative_error": 0.010054348036646843
+    }
+  ]
+}
