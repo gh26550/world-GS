@@ -170,7 +170,11 @@ def generate_legacy(prompt, output, size=512, views=24, seed=0, demo=False):
     return metadata
 
 
-def generate(prompt, output, size=512, views=24, seed=0, demo=False, mode='room', front_image=None, room_size=(6., 3., 6.)):
+def generate(prompt, output, size=512, views=24, seed=0, demo=False, mode='mesh', front_image=None, room_size=None):
+    room_size = room_size or ((8., 3., 8.) if mode == 'mesh' else (6., 3., 6.))
+    if mode == 'mesh':
+        from .mesh_pipeline import generate_mesh_scene
+        return generate_mesh_scene(prompt, output, size, views, seed, demo, front_image, room_size)
     if mode == 'legacy':
         if front_image is not None:
             raise ValueError('--front-image is supported only in room mode')

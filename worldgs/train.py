@@ -5,6 +5,10 @@ from PIL import Image
 
 
 def train(path, steps=1000, max_points=100000):
+    meta_file = Path(path)/'scene.json'
+    if json.loads(meta_file.read_text()).get('mode') == 'mesh_components_v3':
+        from .train_mesh import train_mesh
+        return train_mesh(path, steps, max_points)
     import torch
     from .runtime import validate_torch_location
     validate_torch_location(torch.__file__)

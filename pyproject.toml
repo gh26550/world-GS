@@ -7,7 +7,7 @@ name = "world-gs"
 version = "0.1.0"
 description = "Prompt to mesh-guided 360 reference views and Gaussian splats"
 requires-python = ">=3.10"
-dependencies = ["numpy>=1.24", "Pillow>=10", "scipy>=1.10"]
+dependencies = ["numpy>=1.24", "Pillow>=10", "scipy>=1.10", "trimesh>=4.0", "embreex>=2.17", "rtree>=1.0"]
 
 [project.optional-dependencies]
 generation = ["torch>=2.4", "diffusers>=0.30,<1", "transformers>=4.45,<5", "accelerate>=0.34", "safetensors"]
