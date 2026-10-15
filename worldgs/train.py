@@ -53,14 +53,9 @@ def train(path, steps=1000, max_points=100000):
         return t.detach().cpu().numpy()
     torch.save({'means': cpu(means), 'log_scales': cpu(scales), 'quats': cpu(quats), 'opacity_logits': cpu(opacity), 'color_logits': cpu(colors)}, path/'checkpoint.pt')
     # Standard 3DGS degree-0 SH PLY: scales and opacity remain logits/log-space.
-    fields = ['x', 'y', 'z', 'nx', 'ny', 'nz', 'f_dc_0', 'f_dc_1', 'f_dc_2', 'opacity', 'scale_0', 'scale_1', 'scale_2', 'rot_0', 'rot_1', 'rot_2', 'rot_3']
+    from .ply import write_gaussian_ply
     normalized = torch.nn.functional.normalize(quats, dim=-1)
     values = np.concatenate([cpu(means), np.zeros((len(ids), 3)), (cpu(colors.sigmoid())-.5)/.28209479177387814, cpu(opacity)[:, None], cpu(scales), cpu(normalized)], -1)
-    with open(path/'scene.ply', 'w') as f:
-        f.write('ply\nformat ascii 1.0\nelement vertex '+str(len(ids))+'\n')
-        for name in fields:
-            f.write('property float '+name+'\n')
-        f.write('end_header\n')
-        np.savetxt(f, values, fmt='%.7g')
+    write_gaussian_ply(path/'scene.ply', values)
     Image.fromarray(np.uint8(np.clip(cpu(rendered[0]), 0, 1)*255)).save(path/'train_preview.png')
     (path/'training.json').write_text(json.dumps({'steps': steps, 'points': len(ids), 'first_l1': losses[0], 'last_l1': losses[-1], 'demo': meta['demo'], 'note': 'fixed point count, SH0; no densification; losses are training-view errors'}), encoding='utf-8')

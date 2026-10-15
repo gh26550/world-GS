@@ -13,6 +13,8 @@ WSL Ubuntu 22.04、RTX 5070 Ti 16GBで実行。主要バージョンは `environ
 - 最終ステップ対象画像（yaw 330度）のL1: 0.0150354。画像値の範囲は0〜1。全視点平均でも未使用視点の評価でもない。
 - 最終PLY: 83,285行×17属性、全数値が有限。SH0、log scale、opacity logit、wxyz quaternion。
 
+上記は初回検証時のASCII版の記録。GitHub掲載の生成例はUnity対応修正でbinary little-endian・62属性（追加45属性の高次SHは0）に変換済み。既存のGaussianパラメータは保持。[Unity取り込み手順](unity.md)を参照。
+
 ```bash
 ./run.sh generate --prompt 'A cozy living room with a wooden table, bookshelves and a blue sofa, interior photograph, wide angle' --output runs/livingroom_v1 --size 512 --views 12 --seed 42
 ~/.venvs/world-gs/bin/python -m worldgs.audit runs/livingroom_v1

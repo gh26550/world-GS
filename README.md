@@ -36,10 +36,14 @@ bash setup.sh
 - `guide_*.png`, `mask_*.png`: 既存形状の描画と未観測領域
 - `view_*.png`, `depth_*.npy`, `scene.json`: 参照画像、深度、OpenCV形式camera-to-world姿勢、内部パラメータ
 - `points.npz`: 重複を抑制した初期点群
-- `scene.ply`: 最適化したSH0 Gaussian、標準のlog scale・opacity logit形式
+- `scene.ply`: Unity互換のbinary little-endian float32 PLY。最適化したSH0 Gaussian、標準のlog scale・opacity logit形式。高次SHは0で補完
 - `checkpoint.pt`, `training.json`, `train_preview.png`: 学習結果と検証用出力
 
 保存先は空のディレクトリが必要です。生成データ・モデル・論文PDFはGitに含めません。
+
+## Unityで表示
+
+初期版のASCII PLYはGaussian Splat Creatorでエラーになるため、[Unity取り込み手順](docs/unity.md)の変換コマンドを使用してください。既存結果は再学習不要です。このPCでは `runs/livingroom/scene_unity.ply` と `runs/smoke/scene_unity.ply` を作成済みです。今後の学習はバイナリPLYを出力します。
 
 ## 現在の制約と開発順序
 
