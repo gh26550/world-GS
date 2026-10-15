@@ -56,3 +56,5 @@ bash setup.sh
 先行研究と提案の位置づけは [docs/research.md](docs/research.md) を参照してください。
 
 実プロンプトでの初回生成、GPU学習、出力PLY、目視での問題点は [docs/validation.md](docs/validation.md) に記録しています。
+
+Unity表示時の形状歪みについて、保存データから調べた原因・数値・学習前後の比較図・メッシュ保存場所は [docs/geometry-diagnosis.md](docs/geometry-diagnosis.md) を参照してください。
