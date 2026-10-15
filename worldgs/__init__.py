@@ -1,0 +1,1 @@
+"""World-GS research prototype."""
