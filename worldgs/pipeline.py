@@ -33,7 +33,8 @@ class Models:
         from transformers import pipeline
         estimator = pipeline('depth-estimation', model='depth-anything/Depth-Anything-V2-Small-hf', device=self.device)
         result = estimator(image)['predicted_depth']
-        d = self.torch.nn.functional.interpolate(result[:, None], size=(image.height, image.width), mode='bicubic', align_corners=False)[0, 0].cpu().numpy()
+        result = result.reshape(1, 1, *result.shape[-2:])
+        d = self.torch.nn.functional.interpolate(result, size=(image.height, image.width), mode='bicubic', align_corners=False)[0, 0].cpu().numpy()
         # Relative inverse depth: arbitrary scene units, not metric geometry.
         lo, hi = np.percentile(d, [2, 98])
         depth = 1/(0.15+0.85*np.clip((d-lo)/max(hi-lo, 1e-6), 0, 1))

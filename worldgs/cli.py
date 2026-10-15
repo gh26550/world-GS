@@ -14,7 +14,7 @@ def main():
     train = sub.add_parser('train')
     train.add_argument('path')
     train.add_argument('--steps', type=int, default=1000)
-    train.add_argument('--max-points', type=int, default=30000)
+    train.add_argument('--max-points', type=int, default=100000)
     args = vars(parser.parse_args())
     command = args.pop('command')
     if command == 'generate':

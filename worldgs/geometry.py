@@ -53,7 +53,8 @@ def render_mesh(vertices, faces, colors, K, pose, size):
         if (hi < lo).any():
             continue
         yy, xx = np.mgrid[lo[1]:hi[1]+1, lo[0]:hi[0]+1]
-        den = np.cross(t[1]-t[0], t[2]-t[0])
+        ab, ac = t[1]-t[0], t[2]-t[0]
+        den = ab[0]*ac[1]-ab[1]*ac[0]
         if abs(den) < 1e-8:
             continue
         b = ((xx-t[0, 0])*(t[2, 1]-t[0, 1])-(yy-t[0, 1])*(t[2, 0]-t[0, 0]))/den

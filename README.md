@@ -19,6 +19,8 @@ worldgs train runs/livingroom --steps 1000
 
 ## 軽量な動作確認
 
+このPCでは専用 `.venv` を作成済みです。RTX 5070 Ti用のCUDA設定を含む `./run.sh generate ...`、`./run.sh train ...` でも実行できます。他のGPUでは `TORCH_CUDA_ARCH_LIST` を適切に設定してください。使用環境の主要バージョンは `docs/environment-tested.txt` に記録します。
+
 ```bash
 python -m unittest discover -s tests -v
 worldgs generate --prompt test --output runs/smoke --demo --size 64 --views 8
@@ -48,3 +50,5 @@ worldgs train runs/smoke --steps 20 --max-points 2000
 次の段階: (1) 実プロンプトでの生成と目視評価、(2) セグメンテーションと箱・平面・物体メッシュ化、(3) 深度条件付き補完、(4) 小移動カメラと閉ループ整合、(5) densification・深度正則化、(6) 未使用視点の画像品質・幾何整合性とVRAM/時間の比較実験。
 
 先行研究と提案の位置づけは [docs/research.md](docs/research.md) を参照してください。
+
+実プロンプトでの初回生成、GPU学習、出力PLY、目視での問題点は [docs/validation.md](docs/validation.md) に記録しています。

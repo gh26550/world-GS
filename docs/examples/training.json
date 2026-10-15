@@ -1,0 +1,1 @@
+{"steps": 1500, "points": 83285, "first_l1": 0.1739494800567627, "last_l1": 0.015035415068268776, "demo": false, "note": "fixed point count, SH0; no densification; losses are training-view errors"}

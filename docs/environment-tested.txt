@@ -1,0 +1,8 @@
+# WSL Ubuntu 22.04 / RTX 5070 Ti 16 GB, 2026-10-15
+# Runtime version record, not a complete dependency lock.
+torch==2.7.1+cu128
+numpy==1.26.4
+gsplat==1.6.0
+diffusers==0.39.0
+transformers==4.57.6
+accelerate==1.15.0

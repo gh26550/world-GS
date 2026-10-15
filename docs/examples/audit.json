@@ -1,0 +1,22 @@
+{
+  "frames": 12,
+  "initial_points": 83285,
+  "size": 512,
+  "demo": false,
+  "integrity": "passed",
+  "generated_fractions": [
+    0.0,
+    0.477264404296875,
+    0.4773826599121094,
+    0.4635467529296875,
+    0.4658355712890625,
+    0.4682502746582031,
+    0.46273040771484375,
+    0.4714851379394531,
+    0.46208953857421875,
+    0.4708404541015625,
+    0.2597541809082031,
+    0.07483673095703125
+  ],
+  "note": "Integrity checks do not establish multi-view consistency or reconstruction quality."
+}
