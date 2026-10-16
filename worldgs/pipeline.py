@@ -174,7 +174,13 @@ def generate(prompt, output, size=512, views=24, seed=0, demo=False, mode='expan
     room_size = room_size or ((8., 3., 8.) if mode in ('mesh', 'expand') else (6., 3., 6.))
     if mode == 'expand':
         from .expansion import generate_expanded_scene
-        return generate_expanded_scene(prompt, output, size, views, seed, demo, front_image, room_size)
+        from .mesh_fusion import rebuild_mesh_scene
+        folder = Path(output)
+        if folder.exists() and any(folder.iterdir()):
+            raise FileExistsError('Use an empty output directory')
+        observations = folder/'observations'
+        generate_expanded_scene(prompt, observations, size, views, seed, demo, front_image, room_size)
+        return rebuild_mesh_scene(observations, folder, allow_observations=True)
     if mode == 'mesh':
         from .mesh_pipeline import generate_mesh_scene
         return generate_mesh_scene(prompt, output, size, views, seed, demo, front_image, room_size)

@@ -21,6 +21,12 @@ def main():
     repair = sub.add_parser('refine-depth', help='Re-estimate depth and rebuild seams using existing expand keyframe images')
     repair.add_argument('path')
     repair.add_argument('--output', required=True)
+    rebuild = sub.add_parser('rebuild-mesh', help='Fuse trusted multi-view depth into one TSDF mesh and rebuild GS references')
+    rebuild.add_argument('path')
+    rebuild.add_argument('--output', required=True)
+    rebuild.add_argument('--voxel-size', type=float, default=.025)
+    rebuild.add_argument('--min-views', type=int, default=2)
+    rebuild.add_argument('--strict-support', action='store_true', help='Discard all single-view surfaces; increases holes')
     args = vars(parser.parse_args())
     command = args.pop('command')
     if command == 'generate':
@@ -29,6 +35,9 @@ def main():
     elif command == 'refine-depth':
         from .expansion import repair_depth_scene
         repair_depth_scene(**args)
+    elif command == 'rebuild-mesh':
+        from .mesh_fusion import rebuild_mesh_scene
+        rebuild_mesh_scene(**args)
     else:
         from .train import train
         train(**args)

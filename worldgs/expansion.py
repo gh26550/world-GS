@@ -274,11 +274,20 @@ def generate_expanded_scene(prompt, output, size, views, seed, demo, front_image
 def repair_depth_scene(path, output):
     source = Path(path)
     meta = json.loads((source/'scene.json').read_text())
+    if meta.get('mode') == 'global_tsdf_v6':
+        source = Path(meta['observation_source'])
+        meta = json.loads((source/'scene.json').read_text())
     if meta.get('mode') not in ('progressive_rgbd_v4', 'progressive_rgbd_v5'):
         raise ValueError('refine-depth requires an expand-mode scene')
     keyframes = [meta['frames'][0]]+[f for f in meta['frames'] if 'generated_fraction' in f]
     views = sum(f.get('pitch', 0) == 0 for f in keyframes)
     if len(keyframes) != max(12, views)+8:
         raise ValueError('Incomplete expansion keyframes')
-    return generate_expanded_scene(meta['prompt'], output, meta['size'], views, meta['seed'], meta['demo'],
+    folder = Path(output)
+    if folder.exists() and any(folder.iterdir()):
+        raise FileExistsError('Use an empty output directory')
+    observations = folder/'observations'
+    generate_expanded_scene(meta['prompt'], observations, meta['size'], views, meta['seed'], meta['demo'],
         str(source/'front.png'), meta.get('room_size_prior', [8., 3., 8.]), repair_source=source)
+    from .mesh_fusion import rebuild_mesh_scene
+    return rebuild_mesh_scene(observations, folder, allow_observations=True)

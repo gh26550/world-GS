@@ -6,7 +6,7 @@ from PIL import Image
 
 def train(path, steps=1000, max_points=100000):
     meta_file = Path(path)/'scene.json'
-    if json.loads(meta_file.read_text()).get('mode') in ('mesh_components_v3', 'progressive_rgbd_v4', 'progressive_rgbd_v5'):
+    if json.loads(meta_file.read_text()).get('mode') in ('mesh_components_v3', 'progressive_rgbd_v4', 'progressive_rgbd_v5', 'global_tsdf_v6'):
         from .train_mesh import train_mesh
         return train_mesh(path, steps, max_points)
     import torch

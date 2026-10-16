@@ -14,15 +14,25 @@ def normal_quaternions(normals):
     return q/np.maximum(np.linalg.norm(q, axis=1, keepdims=True), 1e-8)
 
 
+def confidence_loss(error, confidence):
+    # Normalize by pixel count, NOT weight sum: an entirely provisional view must
+    # have less influence than a fully supported one, not regain full weight.
+    return (error*confidence).sum()/max(error.numel(), 1)
+
+
 def train_mesh(path, steps, max_points):
+    path = Path(path)
+    meta = json.loads((path/'scene.json').read_text())
+    expanded = meta.get('mode') in ('progressive_rgbd_v4', 'progressive_rgbd_v5', 'global_tsdf_v6')
+    if meta.get('mode') == 'global_tsdf_v6':
+        quality = json.loads((path/'mesh_quality.json').read_text())
+        if not quality.get('passed') or quality.get('seed_to_assigned_surface_max', 1.) > 1e-4:
+            raise ValueError('Mesh or GS seed quality check failed; rebuild before training')
     import torch
     from .runtime import validate_torch_location
     validate_torch_location(torch.__file__)
     from gsplat import DefaultStrategy, rasterization
     from gsplat.strategy.ops import remove
-    path = Path(path)
-    meta = json.loads((path/'scene.json').read_text())
-    expanded = meta.get('mode') in ('progressive_rgbd_v4', 'progressive_rgbd_v5')
     torch.manual_seed(meta['seed'])
     if not torch.cuda.is_available() or steps < 1 or max_points < 1:
         raise ValueError('CUDA and positive steps/point limit required')
@@ -55,6 +65,8 @@ def train_mesh(path, steps, max_points):
     targets = [t(np.asarray(Image.open(path/f['file_path']))/255)[None] for f in frames]
     depths = [t(np.load(path/f['depth_file'])) for f in frames]
     masks = [t(np.load(path/f['mask_file'])).bool() for f in frames]
+    confidences = [t(np.load(path/f['confidence_file'])) if f.get('confidence_file') else torch.ones_like(masks[i], dtype=torch.float32)
+                   for i, f in enumerate(frames)]
     poses = [torch.linalg.inv(t(f['transform_matrix']))[None] for f in frames]
     tree = cKDTree(source['xyz'])
     anchors, normals = None, None
@@ -75,9 +87,10 @@ def train_mesh(path, steps, max_points):
         i = step % len(frames)
         rendered, alpha, info = render(poses[i])
         valid = masks[i]
-        rgb_loss = (rendered[0, ..., :3][valid]-targets[i][0][valid]).abs().mean()
+        weight = confidences[i][valid]
+        rgb_loss = confidence_loss((rendered[0, ..., :3][valid]-targets[i][0][valid]).abs().mean(-1), weight)
         supported = valid & (alpha[0, ..., 0].detach() > .1)
-        depth_loss = ((rendered[0, ..., 3].clamp_min(.05).log()-depths[i].clamp_min(.05).log()).abs()[supported].mean()
+        depth_loss = (confidence_loss((rendered[0, ..., 3].clamp_min(.05).log()-depths[i].clamp_min(.05).log()).abs()[supported], confidences[i][supported])
                       if supported.any() else rgb_loss*0)
         # Soft guidance with tolerance. No projection, locked plane, fixed rotation or normal thickness.
         if expanded:
@@ -144,7 +157,7 @@ def train_mesh(path, steps, max_points):
         canvas.paste(prediction.resize((256, 256)), (x, y+256))
     canvas.save(path/'heldout_preview.png')
     nearest = tree.query(means, workers=2)[0]
-    training = {'trainer': ('generated_rgbd_3dgs_v5' if meta.get('mode') == 'progressive_rgbd_v5' else 'generated_rgbd_3dgs_v4') if expanded else 'free_3dgs_mesh_references_v3', 'steps': steps, 'initial_points': n, 'final_points': len(means),
+    training = {'trainer': ('fused_tsdf_3dgs_v6' if meta.get('mode') == 'global_tsdf_v6' else 'generated_rgbd_3dgs_v5' if meta.get('mode') == 'progressive_rgbd_v5' else 'generated_rgbd_3dgs_v4') if expanded else 'free_3dgs_mesh_references_v3', 'steps': steps, 'initial_points': n, 'final_points': len(means),
         'mesh_prior_weight': 0. if expanded else .1, 'depth_weight_schedule': [.1, .02] if expanded else [.1, .1],
         'trainable': list(parameters.keys()), 'hard_projection': False, 'densification': True, 'sh_degree': degree,
         'nearest_source_distance_median': float(np.median(nearest)), 'nearest_source_distance_p95': float(np.quantile(nearest, .95)), 'log': log}

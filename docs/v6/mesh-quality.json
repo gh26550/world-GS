@@ -1,0 +1,51 @@
+{
+  "passed": true,
+  "before": {
+    "vertices": 390472,
+    "triangles": 726232,
+    "finite": true,
+    "components": 1173,
+    "small_components_under_50_faces": 984,
+    "boundary_edges": 53728,
+    "nonmanifold_edges": 0,
+    "boundary_edge_fraction": 0.048134225398042664,
+    "degenerate_faces": 0,
+    "aspect_p95": 6.92668784399475,
+    "needle_face_fraction": 0.0005383954438801926,
+    "max_edge": 0.5126224847264121,
+    "surface_area": 256.81948720345304,
+    "small_component_area_fraction": 0.03227231757669891
+  },
+  "after": {
+    "vertices": 280097,
+    "triangles": 517958,
+    "finite": true,
+    "components": 82,
+    "small_components_under_50_faces": 1,
+    "boundary_edges": 45846,
+    "nonmanifold_edges": 0,
+    "boundary_edge_fraction": 0.05731753056784937,
+    "degenerate_faces": 0,
+    "aspect_p95": 5.09341588021618,
+    "needle_face_fraction": 0.004299576413531599,
+    "max_edge": 0.046794349322303794,
+    "surface_area": 138.0749604598233,
+    "small_component_area_fraction": 4.055070334341793e-07
+  },
+  "voxel_size": 0.025,
+  "min_views": 2,
+  "strict_support": false,
+  "reserved_keyframe": 6,
+  "reserved_used_for_fusion": false,
+  "checks": [
+    "finite vertices",
+    ">=100 triangles",
+    "no degenerate faces",
+    "no nonmanifold edges",
+    "max edge <=4 voxels"
+  ],
+  "limitations": [
+    "quality checks do not establish semantic correctness or watertightness"
+  ],
+  "seed_to_assigned_surface_max": 4.1929086477763776e-07
+}

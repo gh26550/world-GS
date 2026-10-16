@@ -12,5 +12,5 @@ fi
 python="$venv/bin/python"
 "$python" -c 'import sys; assert (3,10) <= sys.version_info[:2] <= (3,12), "Use Python 3.10, 3.11 or 3.12"'
 "$python" -m pip install 'torch==2.7.1' 'torchvision==0.22.1' --index-url https://download.pytorch.org/whl/cu128
-"$python" -m pip install -c constraints.txt -e '.[generation,training]'
+"$python" -m pip install -c constraints.txt -e '.[generation,training,meshing]'
 echo "Ready: $venv. Use ./run.sh generate ... and ./run.sh train ..."

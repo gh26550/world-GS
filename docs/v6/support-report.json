@@ -1,0 +1,173 @@
+[
+  {
+    "index": 0,
+    "candidates": 132131,
+    "accepted": 122543,
+    "accepted_fraction": 0.8310479058159722,
+    "conflicting_points": 54,
+    "provisional_points": 25939,
+    "trusted_points": 96604
+  },
+  {
+    "index": 1,
+    "candidates": 119147,
+    "accepted": 118351,
+    "accepted_fraction": 0.8026190863715278,
+    "conflicting_points": 65,
+    "provisional_points": 6078,
+    "trusted_points": 112273
+  },
+  {
+    "index": 2,
+    "candidates": 124668,
+    "accepted": 124406,
+    "accepted_fraction": 0.8436821831597222,
+    "conflicting_points": 50,
+    "provisional_points": 5406,
+    "trusted_points": 119000
+  },
+  {
+    "index": 3,
+    "candidates": 133472,
+    "accepted": 133352,
+    "accepted_fraction": 0.9043511284722222,
+    "conflicting_points": 21,
+    "provisional_points": 4372,
+    "trusted_points": 128980
+  },
+  {
+    "index": 4,
+    "candidates": 134381,
+    "accepted": 134219,
+    "accepted_fraction": 0.9102308485243056,
+    "conflicting_points": 7,
+    "provisional_points": 4918,
+    "trusted_points": 129301
+  },
+  {
+    "index": 5,
+    "candidates": 133168,
+    "accepted": 133059,
+    "accepted_fraction": 0.9023640950520834,
+    "conflicting_points": 3,
+    "provisional_points": 23223,
+    "trusted_points": 109836
+  },
+  {
+    "index": 6,
+    "candidates": 139278,
+    "accepted": 139178,
+    "accepted_fraction": 0.9438612196180556,
+    "conflicting_points": 0,
+    "provisional_points": 23599,
+    "trusted_points": 115579
+  },
+  {
+    "index": 7,
+    "candidates": 138101,
+    "accepted": 138022,
+    "accepted_fraction": 0.9360215928819444,
+    "conflicting_points": 9,
+    "provisional_points": 3195,
+    "trusted_points": 134827
+  },
+  {
+    "index": 8,
+    "candidates": 138543,
+    "accepted": 138407,
+    "accepted_fraction": 0.9386325412326388,
+    "conflicting_points": 50,
+    "provisional_points": 1531,
+    "trusted_points": 136876
+  },
+  {
+    "index": 9,
+    "candidates": 130437,
+    "accepted": 130326,
+    "accepted_fraction": 0.8838297526041666,
+    "conflicting_points": 60,
+    "provisional_points": 4125,
+    "trusted_points": 126201
+  },
+  {
+    "index": 10,
+    "candidates": 120276,
+    "accepted": 119961,
+    "accepted_fraction": 0.81353759765625,
+    "conflicting_points": 157,
+    "provisional_points": 2507,
+    "trusted_points": 117454
+  },
+  {
+    "index": 11,
+    "candidates": 117533,
+    "accepted": 116782,
+    "accepted_fraction": 0.7919786241319444,
+    "conflicting_points": 1,
+    "provisional_points": 97379,
+    "trusted_points": 19403
+  },
+  {
+    "index": 12,
+    "candidates": 128563,
+    "accepted": 127470,
+    "accepted_fraction": 0.8644612630208334,
+    "conflicting_points": 0,
+    "provisional_points": 93850,
+    "trusted_points": 33620
+  },
+  {
+    "index": 13,
+    "candidates": 126174,
+    "accepted": 123221,
+    "accepted_fraction": 0.8356458875868056,
+    "conflicting_points": 0,
+    "provisional_points": 95701,
+    "trusted_points": 27520
+  },
+  {
+    "index": 14,
+    "candidates": 128726,
+    "accepted": 126390,
+    "accepted_fraction": 0.8571370442708334,
+    "conflicting_points": 48,
+    "provisional_points": 92053,
+    "trusted_points": 34337
+  },
+  {
+    "index": 15,
+    "candidates": 129901,
+    "accepted": 129043,
+    "accepted_fraction": 0.8751288519965278,
+    "conflicting_points": 4,
+    "provisional_points": 94704,
+    "trusted_points": 34339
+  },
+  {
+    "index": 16,
+    "candidates": 134199,
+    "accepted": 132590,
+    "accepted_fraction": 0.8991834852430556,
+    "conflicting_points": 4,
+    "provisional_points": 95900,
+    "trusted_points": 36690
+  },
+  {
+    "index": 17,
+    "candidates": 130217,
+    "accepted": 129147,
+    "accepted_fraction": 0.8758341471354166,
+    "conflicting_points": 0,
+    "provisional_points": 96520,
+    "trusted_points": 32627
+  },
+  {
+    "index": 18,
+    "candidates": 135619,
+    "accepted": 134239,
+    "accepted_fraction": 0.9103664822048612,
+    "conflicting_points": 18,
+    "provisional_points": 94467,
+    "trusted_points": 39772
+  }
+]
