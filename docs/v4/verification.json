@@ -1,0 +1,55 @@
+{
+  "mode": "progressive_rgbd_v4",
+  "train_views": 29,
+  "heldout_views": 3,
+  "seed_points": 352686,
+  "updated_mesh_triangles": 714477,
+  "new_directions_with_geometry": [
+    90,
+    180,
+    270
+  ],
+  "new_geometry_triangles": 643679,
+  "minimum_keyframe_consistent_fraction": 0.8422105577256944,
+  "camera_baseline": 1.0,
+  "tests_passed": 25,
+  "limitations": [
+    "unseen content is generated, not recovered truth",
+    "relative monocular depth can warp geometry",
+    "reprojection preserves observed pixels but does not guarantee global semantic consistency",
+    "heldout references derive from generated geometry, not real photographs",
+    "not dynamically relightable"
+  ],
+  "steps": 2000,
+  "final_gaussians": 180000,
+  "sh_degree": 3,
+  "mesh_prior_weight": 0.0,
+  "hard_projection": false,
+  "ply_bytes": 44641531,
+  "evaluation": {
+    "reference": "heldout updated generated RGBD geometry renders; not independent ground truth",
+    "frames": [
+      {
+        "camera": 0,
+        "target": "generated_scene",
+        "valid_fraction": 0.9006076388888888,
+        "rgb_l1": 0.03240259711470079,
+        "depth_relative_error": 0.025860074907541275
+      },
+      {
+        "camera": 1,
+        "target": "generated_scene",
+        "valid_fraction": 0.921630859375,
+        "rgb_l1": 0.02761760455471002,
+        "depth_relative_error": 0.02694723568856716
+      },
+      {
+        "camera": 2,
+        "target": "generated_scene",
+        "valid_fraction": 0.88861083984375,
+        "rgb_l1": 0.0171679067856824,
+        "depth_relative_error": 0.01153248269110918
+      }
+    ]
+  }
+}

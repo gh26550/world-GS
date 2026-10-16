@@ -22,6 +22,7 @@ def train_mesh(path, steps, max_points):
     from gsplat.strategy.ops import remove
     path = Path(path)
     meta = json.loads((path/'scene.json').read_text())
+    expanded = meta.get('mode') == 'progressive_rgbd_v4'
     torch.manual_seed(meta['seed'])
     if not torch.cuda.is_available() or steps < 1 or max_points < 1:
         raise ValueError('CUDA and positive steps/point limit required')
@@ -67,7 +68,7 @@ def train_mesh(path, steps, max_points):
     for step in range(steps):
         degree = min(3, step//300)
         count = len(parameters['means'])
-        if anchors is None or len(anchors) != count or step-last_anchor_step >= 100:
+        if not expanded and (anchors is None or len(anchors) != count or step-last_anchor_step >= 100):
             nearest = tree.query(cpu(parameters['means']), workers=2)[1]
             anchors, normals = t(source['xyz'][nearest]), t(source['normals'][nearest])
             last_anchor_step = step
@@ -79,9 +80,15 @@ def train_mesh(path, steps, max_points):
         depth_loss = ((rendered[0, ..., 3].clamp_min(.05).log()-depths[i].clamp_min(.05).log()).abs()[supported].mean()
                       if supported.any() else rgb_loss*0)
         # Soft guidance with tolerance. No projection, locked plane, fixed rotation or normal thickness.
-        offset = ((parameters['means']-anchors)*normals).sum(-1).abs()
-        prior = torch.relu(offset-.04).mean()
-        loss = rgb_loss+.1*depth_loss+.1*prior
+        if expanded:
+            prior = rgb_loss*0
+        else:
+            offset = ((parameters['means']-anchors)*normals).sum(-1).abs()
+            prior = torch.relu(offset-.04).mean()
+        # Generated-depth scenes have no constraint to their initial scaffold.
+        # Predicted depth is an uncertain cue; reduce its weight during fitting.
+        depth_weight = .1*(1-.8*step/max(steps-1, 1)) if expanded else .1
+        loss = rgb_loss+depth_weight*depth_loss+(0. if expanded else .1)*prior
         if not torch.isfinite(loss):
             raise RuntimeError('Non-finite mesh GS training loss')
         strategy.step_pre_backward(parameters, optimizers, state, step, info)
@@ -137,9 +144,10 @@ def train_mesh(path, steps, max_points):
         canvas.paste(prediction.resize((256, 256)), (x, y+256))
     canvas.save(path/'heldout_preview.png')
     nearest = tree.query(means, workers=2)[0]
-    training = {'trainer': 'free_3dgs_mesh_references_v3', 'steps': steps, 'initial_points': n, 'final_points': len(means),
+    training = {'trainer': 'generated_rgbd_3dgs_v4' if expanded else 'free_3dgs_mesh_references_v3', 'steps': steps, 'initial_points': n, 'final_points': len(means),
+        'mesh_prior_weight': 0. if expanded else .1, 'depth_weight_schedule': [.1, .02] if expanded else [.1, .1],
         'trainable': list(parameters.keys()), 'hard_projection': False, 'densification': True, 'sh_degree': degree,
         'nearest_source_distance_median': float(np.median(nearest)), 'nearest_source_distance_p95': float(np.quantile(nearest, .95)), 'log': log}
     (path/'training.json').write_text(json.dumps(training, indent=2), encoding='utf-8')
-    (path/'evaluation.json').write_text(json.dumps({'reference': 'heldout triangle mesh renders; not real-world ground truth', 'frames': evaluation}, indent=2), encoding='utf-8')
+    (path/'evaluation.json').write_text(json.dumps({'reference': 'heldout updated generated RGBD geometry renders; not independent ground truth' if expanded else 'heldout triangle mesh renders; not real-world ground truth', 'frames': evaluation}, indent=2), encoding='utf-8')
     print(f'Saved {len(means)} freely optimized Gaussians; SH degree {degree}', flush=True)

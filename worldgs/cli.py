@@ -11,7 +11,7 @@ def main():
     generate.add_argument('--views', type=int, default=24)
     generate.add_argument('--seed', type=int, default=0)
     generate.add_argument('--demo', action='store_true', help='Synthetic integration fixture; does not generate images from the prompt')
-    generate.add_argument('--mode', choices=['mesh', 'room', 'legacy'], default='mesh')
+    generate.add_argument('--mode', choices=['expand', 'mesh', 'room', 'legacy'], default='expand')
     generate.add_argument('--front-image', help='Reuse an existing front image for a controlled comparison')
     generate.add_argument('--room-size', nargs=3, type=float, default=None, metavar=('WIDTH', 'HEIGHT', 'LENGTH'))
     train = sub.add_parser('train')

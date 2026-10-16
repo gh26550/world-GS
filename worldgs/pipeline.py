@@ -85,7 +85,7 @@ class Models:
         self.torch.cuda.empty_cache()
         return selected[:8]
 
-    def controlled_complete(self, prompt, rgb, missing, depth, index, negative_prompt=''):
+    def controlled_complete(self, prompt, rgb, missing, depth, index, negative_prompt='', control_strength=1.):
         from diffusers import ControlNetModel, StableDiffusionControlNetInpaintPipeline
         if not hasattr(self, 'control_pipe'):
             control = ControlNetModel.from_pretrained('lllyasviel/control_v11f1p_sd15_depth', torch_dtype=self.dtype)
@@ -98,7 +98,7 @@ class Models:
         result = self.control_pipe(prompt=prompt, negative_prompt='distorted walls, warped room, duplicate furniture, fisheye, text, '+negative_prompt,
             image=Image.fromarray(rgb), mask_image=Image.fromarray(np.uint8(missing)*255),
             control_image=Image.fromarray(condition).convert('RGB'), width=rgb.shape[1], height=rgb.shape[0],
-            num_inference_steps=25, guidance_scale=6., controlnet_conditioning_scale=1.,
+            num_inference_steps=25, guidance_scale=6., controlnet_conditioning_scale=control_strength,
             generator=self.torch.Generator(self.device).manual_seed(self.seed+index)).images[0]
         image = np.asarray(result).copy()
         image[~missing] = rgb[~missing]
@@ -170,14 +170,17 @@ def generate_legacy(prompt, output, size=512, views=24, seed=0, demo=False):
     return metadata
 
 
-def generate(prompt, output, size=512, views=24, seed=0, demo=False, mode='mesh', front_image=None, room_size=None):
-    room_size = room_size or ((8., 3., 8.) if mode == 'mesh' else (6., 3., 6.))
+def generate(prompt, output, size=512, views=24, seed=0, demo=False, mode='expand', front_image=None, room_size=None):
+    room_size = room_size or ((8., 3., 8.) if mode in ('mesh', 'expand') else (6., 3., 6.))
+    if mode == 'expand':
+        from .expansion import generate_expanded_scene
+        return generate_expanded_scene(prompt, output, size, views, seed, demo, front_image, room_size)
     if mode == 'mesh':
         from .mesh_pipeline import generate_mesh_scene
         return generate_mesh_scene(prompt, output, size, views, seed, demo, front_image, room_size)
     if mode == 'legacy':
         if front_image is not None:
-            raise ValueError('--front-image is supported only in room mode')
+            raise ValueError('--front-image is not supported in legacy mode')
         return generate_legacy(prompt, output, size, views, seed, demo)
     from .room_pipeline import generate_room
     return generate_room(prompt, output, size, views, seed, demo, front_image, room_size)
