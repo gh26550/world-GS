@@ -1,0 +1,217 @@
+{
+  "path": "runs/livingroom_holes_v7_validated",
+  "reference": "source generated-depth validity, not real-world ground truth",
+  "frames": [
+    {
+      "index": 0,
+      "source_keyframe": "view_000.png",
+      "mesh_hit_fraction": 0.7835489908854166,
+      "grazing_rejected_fraction": 2.712673611111111e-05,
+      "mesh_missing_on_source_fraction": 0.21645100911458334,
+      "gs_alpha_below_half_on_mesh": 0.0,
+      "gs_alpha_below_95_on_mesh": 0.02153385436952025
+    },
+    {
+      "index": 1,
+      "source_keyframe": "view_001.png",
+      "mesh_hit_fraction": 0.82989501953125,
+      "grazing_rejected_fraction": 7.459852430555556e-05,
+      "mesh_missing_on_source_fraction": 0.11328541302918302,
+      "gs_alpha_below_half_on_mesh": 8.171737229617645e-05,
+      "gs_alpha_below_95_on_mesh": 0.024425322579327138
+    },
+    {
+      "index": 2,
+      "source_keyframe": "view_002.png",
+      "mesh_hit_fraction": 0.8757052951388888,
+      "grazing_rejected_fraction": 3.390842013888889e-05,
+      "mesh_missing_on_source_fraction": 0.07963796922445028,
+      "gs_alpha_below_half_on_mesh": 6.195403010965863e-05,
+      "gs_alpha_below_95_on_mesh": 0.015836998946781488
+    },
+    {
+      "index": 3,
+      "source_keyframe": "view_003.png",
+      "mesh_hit_fraction": 0.9420166015625,
+      "grazing_rejected_fraction": 2.712673611111111e-05,
+      "mesh_missing_on_source_fraction": 0.045018787091336866,
+      "gs_alpha_below_half_on_mesh": 4.3194678415619194e-05,
+      "gs_alpha_below_95_on_mesh": 0.02143175960721639
+    },
+    {
+      "index": 4,
+      "source_keyframe": "view_004.png",
+      "mesh_hit_fraction": 0.9476521809895834,
+      "grazing_rejected_fraction": 0.0,
+      "mesh_missing_on_source_fraction": 0.03499634502923977,
+      "gs_alpha_below_half_on_mesh": 0.0,
+      "gs_alpha_below_95_on_mesh": 0.032325010555543626
+    },
+    {
+      "index": 5,
+      "source_keyframe": "view_005.png",
+      "mesh_hit_fraction": 0.9507581922743056,
+      "grazing_rejected_fraction": 6.781684027777777e-06,
+      "mesh_missing_on_source_fraction": 0.023617003103379552,
+      "gs_alpha_below_half_on_mesh": 7.1329220014979135e-06,
+      "gs_alpha_below_95_on_mesh": 0.03672028246371126
+    },
+    {
+      "index": 6,
+      "source_keyframe": "view_006.png",
+      "mesh_hit_fraction": 0.9656575520833334,
+      "grazing_rejected_fraction": 0.0,
+      "mesh_missing_on_source_fraction": 0.021136183082691048,
+      "gs_alpha_below_half_on_mesh": 1.4045732906343052e-05,
+      "gs_alpha_below_95_on_mesh": 0.025759874150233158
+    },
+    {
+      "index": 7,
+      "source_keyframe": "view_007.png",
+      "mesh_hit_fraction": 0.9602864583333334,
+      "grazing_rejected_fraction": 1.3563368055555555e-05,
+      "mesh_missing_on_source_fraction": 0.02830031975416303,
+      "gs_alpha_below_half_on_mesh": 1.4124293785310734e-05,
+      "gs_alpha_below_95_on_mesh": 0.024689265536723164
+    },
+    {
+      "index": 8,
+      "source_keyframe": "view_008.png",
+      "mesh_hit_fraction": 0.9604288736979166,
+      "grazing_rejected_fraction": 1.3563368055555555e-05,
+      "mesh_missing_on_source_fraction": 0.024168847803085147,
+      "gs_alpha_below_half_on_mesh": 0.0,
+      "gs_alpha_below_95_on_mesh": 0.025758891689791768
+    },
+    {
+      "index": 9,
+      "source_keyframe": "view_009.png",
+      "mesh_hit_fraction": 0.9682278103298612,
+      "grazing_rejected_fraction": 0.0,
+      "mesh_missing_on_source_fraction": 0.019663155554320334,
+      "gs_alpha_below_half_on_mesh": 1.4008447093597439e-05,
+      "gs_alpha_below_95_on_mesh": 0.03095866807685034
+    },
+    {
+      "index": 10,
+      "source_keyframe": "view_010.png",
+      "mesh_hit_fraction": 0.9256727430555556,
+      "grazing_rejected_fraction": 2.712673611111111e-05,
+      "mesh_missing_on_source_fraction": 0.03970841159157473,
+      "gs_alpha_below_half_on_mesh": 2.9304888055327628e-05,
+      "gs_alpha_below_95_on_mesh": 0.035942445199859334
+    },
+    {
+      "index": 11,
+      "source_keyframe": "view_011.png",
+      "mesh_hit_fraction": 0.8678792317708334,
+      "grazing_rejected_fraction": 6.781684027777777e-06,
+      "mesh_missing_on_source_fraction": 0.07640600492941968,
+      "gs_alpha_below_half_on_mesh": 0.0,
+      "gs_alpha_below_95_on_mesh": 0.03985184490599653
+    },
+    {
+      "index": 12,
+      "source_keyframe": "view_012.png",
+      "mesh_hit_fraction": 0.7857801649305556,
+      "grazing_rejected_fraction": 2.712673611111111e-05,
+      "mesh_missing_on_source_fraction": 0.1417866374186027,
+      "gs_alpha_below_half_on_mesh": 0.0,
+      "gs_alpha_below_95_on_mesh": 0.07824420892740014
+    },
+    {
+      "index": 13,
+      "source_keyframe": "view_013.png",
+      "mesh_hit_fraction": 0.8443806966145834,
+      "grazing_rejected_fraction": 0.0,
+      "mesh_missing_on_source_fraction": 0.12065626563961965,
+      "gs_alpha_below_half_on_mesh": 9.637857504276799e-05,
+      "gs_alpha_below_95_on_mesh": 0.08212257748435856
+    },
+    {
+      "index": 14,
+      "source_keyframe": "view_014.png",
+      "mesh_hit_fraction": 0.8258734809027778,
+      "grazing_rejected_fraction": 0.0,
+      "mesh_missing_on_source_fraction": 0.13116569871239006,
+      "gs_alpha_below_half_on_mesh": 1.6423057973394645e-05,
+      "gs_alpha_below_95_on_mesh": 0.06473969453112169
+    },
+    {
+      "index": 15,
+      "source_keyframe": "view_015.png",
+      "mesh_hit_fraction": 0.8723483615451388,
+      "grazing_rejected_fraction": 0.0,
+      "mesh_missing_on_source_fraction": 0.09928996793403573,
+      "gs_alpha_below_half_on_mesh": 0.0,
+      "gs_alpha_below_95_on_mesh": 0.0940816120280177
+    },
+    {
+      "index": 16,
+      "source_keyframe": "view_016.png",
+      "mesh_hit_fraction": 0.8446994357638888,
+      "grazing_rejected_fraction": 2.0345052083333332e-05,
+      "mesh_missing_on_source_fraction": 0.12456556197013102,
+      "gs_alpha_below_half_on_mesh": 0.0,
+      "gs_alpha_below_95_on_mesh": 0.02838883714955522
+    },
+    {
+      "index": 17,
+      "source_keyframe": "view_017.png",
+      "mesh_hit_fraction": 0.8934122721354166,
+      "grazing_rejected_fraction": 2.0345052083333332e-05,
+      "mesh_missing_on_source_fraction": 0.08854749192816595,
+      "gs_alpha_below_half_on_mesh": 6.83168993236627e-05,
+      "gs_alpha_below_95_on_mesh": 0.02873864231548744
+    },
+    {
+      "index": 18,
+      "source_keyframe": "view_018.png",
+      "mesh_hit_fraction": 0.8643798828125,
+      "grazing_rejected_fraction": 1.3563368055555555e-05,
+      "mesh_missing_on_source_fraction": 0.0968591897914595,
+      "gs_alpha_below_half_on_mesh": 0.0,
+      "gs_alpha_below_95_on_mesh": 0.035180216228090824
+    },
+    {
+      "index": 19,
+      "source_keyframe": "view_019.png",
+      "mesh_hit_fraction": 0.8946329752604166,
+      "grazing_rejected_fraction": 0.0,
+      "mesh_missing_on_source_fraction": 0.08259177448196066,
+      "gs_alpha_below_half_on_mesh": 0.0,
+      "gs_alpha_below_95_on_mesh": 0.023658457083513367
+    },
+    {
+      "index": 20,
+      "source_keyframe": null,
+      "mesh_hit_fraction": 0.7660115559895834,
+      "grazing_rejected_fraction": 6.781684027777777e-06,
+      "mesh_missing_on_source_fraction": 0.0,
+      "gs_alpha_below_half_on_mesh": 0.00015050507733305003,
+      "gs_alpha_below_95_on_mesh": 0.0432126636742716
+    },
+    {
+      "index": 21,
+      "source_keyframe": null,
+      "mesh_hit_fraction": 0.9523383246527778,
+      "grazing_rejected_fraction": 0.0,
+      "mesh_missing_on_source_fraction": 0.0,
+      "gs_alpha_below_half_on_mesh": 0.0,
+      "gs_alpha_below_95_on_mesh": 0.03918734155581508
+    },
+    {
+      "index": 22,
+      "source_keyframe": null,
+      "mesh_hit_fraction": 0.9742160373263888,
+      "grazing_rejected_fraction": 6.781684027777777e-06,
+      "mesh_missing_on_source_fraction": 6.9611705904464895e-06,
+      "gs_alpha_below_half_on_mesh": 0.0,
+      "gs_alpha_below_95_on_mesh": 0.030072256950728835
+    }
+  ],
+  "mean_mesh_missing_on_source": 0.0803926018591896,
+  "mean_grazing_rejected_fraction": 1.4153079710144924e-05,
+  "mean_gs_alpha_below_half_on_mesh": 2.596112931897419e-05,
+  "mean_gs_alpha_below_95_on_mesh": 0.03838524895695281
+}

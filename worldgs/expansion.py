@@ -59,14 +59,14 @@ class SharedRGBDRenderer:
         self.mesh = geometry
         self.rays = RayMeshIntersector(geometry)
 
-    def render(self, K, pose, size):
+    def render(self, K, pose, size, min_incidence=.02):
         y, x = np.indices((size, size))
         rays = (np.stack([x, y, np.ones_like(x)], -1) @ np.linalg.inv(K).T @ pose[:3, :3].T).reshape(-1, 3)
         locations, ids, triangles = self.rays.intersects_location(np.tile(pose[:3, 3], (len(rays), 1)), rays, multiple_hits=False)
         depth = ((locations-pose[:3, 3]) @ pose[:3, :3])[:, 2]
         normals = self.mesh.face_normals[triangles]
         incidence = np.abs((normals*(-rays[ids]/np.linalg.norm(rays[ids], axis=1)[:, None])).sum(-1))
-        good = (depth > .15) & (incidence > .18)
+        good = (depth > .15) & (incidence > min_incidence)
         locations, ids, triangles, depth, normals = locations[good], ids[good], triangles[good], depth[good], normals[good]
         bary = trimesh.triangles.points_to_barycentric(self.mesh.triangles[triangles], locations)
         colors = (self.mesh.visual.vertex_colors[self.mesh.faces[triangles], :3]*bary[..., None]).sum(1)
@@ -274,7 +274,7 @@ def generate_expanded_scene(prompt, output, size, views, seed, demo, front_image
 def repair_depth_scene(path, output):
     source = Path(path)
     meta = json.loads((source/'scene.json').read_text())
-    if meta.get('mode') == 'global_tsdf_v6':
+    if meta.get('mode') in ('global_tsdf_v6', 'global_tsdf_v7'):
         source = Path(meta['observation_source'])
         meta = json.loads((source/'scene.json').read_text())
     if meta.get('mode') not in ('progressive_rgbd_v4', 'progressive_rgbd_v5'):

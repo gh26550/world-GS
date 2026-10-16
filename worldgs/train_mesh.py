@@ -20,11 +20,16 @@ def confidence_loss(error, confidence):
     return (error*confidence).sum()/max(error.numel(), 1)
 
 
+def foreground_coverage_loss(alpha, confidence, mask):
+    return confidence_loss(-alpha[mask].clamp(1e-4, 1.).log(), confidence[mask])
+
+
 def train_mesh(path, steps, max_points):
     path = Path(path)
     meta = json.loads((path/'scene.json').read_text())
-    expanded = meta.get('mode') in ('progressive_rgbd_v4', 'progressive_rgbd_v5', 'global_tsdf_v6')
-    if meta.get('mode') == 'global_tsdf_v6':
+    expanded = meta.get('mode') in ('progressive_rgbd_v4', 'progressive_rgbd_v5', 'global_tsdf_v6', 'global_tsdf_v7')
+    coverage_mode = meta.get('mode') == 'global_tsdf_v7'
+    if meta.get('mode') in ('global_tsdf_v6', 'global_tsdf_v7'):
         quality = json.loads((path/'mesh_quality.json').read_text())
         if not quality.get('passed') or quality.get('seed_to_assigned_surface_max', 1.) > 1e-4:
             raise ValueError('Mesh or GS seed quality check failed; rebuild before training')
@@ -41,7 +46,8 @@ def train_mesh(path, steps, max_points):
     def cpu(x):
         return x.detach().cpu().numpy()
     source = np.load(path/'points.npz')
-    ids = np.random.default_rng(meta['seed']).permutation(len(source['xyz']))[:max_points]
+    from .coverage_sampling import stratified_seed_ids, coverage_drop_mask
+    ids = stratified_seed_ids(source['xyz'], max_points, meta['seed']) if coverage_mode else np.random.default_rng(meta['seed']).permutation(len(source['xyz']))[:max_points]
     initial = source['xyz'][ids]
     n = len(initial)
     distance = cKDTree(initial).query(initial, k=2)[0][:, 1]
@@ -101,7 +107,8 @@ def train_mesh(path, steps, max_points):
         # Generated-depth scenes have no constraint to their initial scaffold.
         # Predicted depth is an uncertain cue; reduce its weight during fitting.
         depth_weight = .1*(1-.8*step/max(steps-1, 1)) if expanded else .1
-        loss = rgb_loss+depth_weight*depth_loss+(0. if expanded else .1)*prior
+        coverage_loss = foreground_coverage_loss(alpha[0, ..., 0], confidences[i], valid) if coverage_mode else rgb_loss*0
+        loss = rgb_loss+depth_weight*depth_loss+(0. if expanded else .1)*prior+.05*coverage_loss
         if not torch.isfinite(loss):
             raise RuntimeError('Non-finite mesh GS training loss')
         strategy.step_pre_backward(parameters, optimizers, state, step, info)
@@ -116,13 +123,16 @@ def train_mesh(path, steps, max_points):
             parameters['scales'].clamp_(np.log(.0015), np.log(.25))
         if len(parameters['means']) > 180000:
             with torch.no_grad():
-                top = parameters['opacities'].topk(180000).indices
-                drop = torch.ones(len(parameters['means']), device='cuda', dtype=torch.bool)
-                drop[top] = False
+                if coverage_mode:
+                    drop = coverage_drop_mask(parameters['means'], parameters['opacities'], 180000)
+                else:
+                    top = parameters['opacities'].topk(180000).indices
+                    drop = torch.ones(len(parameters['means']), device='cuda', dtype=torch.bool)
+                    drop[top] = False
                 remove(parameters, optimizers, state, drop)
             strategy.refine_stop_iter = step
         if step % 100 == 0 or step == steps-1:
-            record = {'step': step, 'points': len(parameters['means']), 'rgb_l1': float(rgb_loss.detach()), 'depth_log_l1': float(depth_loss.detach()), 'soft_mesh_penalty': float(prior.detach()), 'sh_degree': degree}
+            record = {'step': step, 'points': len(parameters['means']), 'rgb_l1': float(rgb_loss.detach()), 'depth_log_l1': float(depth_loss.detach()), 'coverage_loss': float(coverage_loss.detach()), 'soft_mesh_penalty': float(prior.detach()), 'sh_degree': degree}
             log.append(record)
             print(json.dumps(record), flush=True)
     degree = min(3, (steps-1)//300)
@@ -143,8 +153,11 @@ def train_mesh(path, steps, max_points):
         depth = np.load(path/frame['depth_file'])
         mask = np.load(path/frame['mask_file'])
         valid = mask & (cpu(alpha[0, ..., 0]) > .5)
+        np.save(path/f'heldout_alpha_{i:03d}.npy', cpu(alpha[0, ..., 0]))
         evaluation.append({'camera': i, 'target': frame['target'], 'valid_fraction': float(valid.mean()),
             'rgb_l1': float(np.abs(predicted[mask]-target[mask]).mean()),
+            'alpha_below_half_on_target': float(((cpu(alpha[0, ..., 0]) < .5) & mask).sum()/max(mask.sum(), 1)),
+            'alpha_below_95_on_target': float(((cpu(alpha[0, ..., 0]) < .95) & mask).sum()/max(mask.sum(), 1)),
             'depth_relative_error': float((np.abs(cpu(result[0, ..., 3])[valid]-depth[valid])/depth[valid]).mean()) if valid.any() else None})
         image = Image.fromarray(np.uint8(np.clip(predicted, 0, 1)*255))
         image.save(path/f'heldout_render_{i:03d}.png')
@@ -157,7 +170,8 @@ def train_mesh(path, steps, max_points):
         canvas.paste(prediction.resize((256, 256)), (x, y+256))
     canvas.save(path/'heldout_preview.png')
     nearest = tree.query(means, workers=2)[0]
-    training = {'trainer': ('fused_tsdf_3dgs_v6' if meta.get('mode') == 'global_tsdf_v6' else 'generated_rgbd_3dgs_v5' if meta.get('mode') == 'progressive_rgbd_v5' else 'generated_rgbd_3dgs_v4') if expanded else 'free_3dgs_mesh_references_v3', 'steps': steps, 'initial_points': n, 'final_points': len(means),
+    training = {'trainer': ('coverage_3dgs_v7' if coverage_mode else 'fused_tsdf_3dgs_v6' if meta.get('mode') == 'global_tsdf_v6' else 'generated_rgbd_3dgs_v5' if meta.get('mode') == 'progressive_rgbd_v5' else 'generated_rgbd_3dgs_v4') if expanded else 'free_3dgs_mesh_references_v3', 'steps': steps, 'initial_points': n, 'final_points': len(means),
+        'coverage_loss_weight': .05 if coverage_mode else 0., 'spatially_stratified_sampling': coverage_mode, 'spatial_budget_pruning': coverage_mode,
         'mesh_prior_weight': 0. if expanded else .1, 'depth_weight_schedule': [.1, .02] if expanded else [.1, .1],
         'trainable': list(parameters.keys()), 'hard_projection': False, 'densification': True, 'sh_degree': degree,
         'nearest_source_distance_median': float(np.median(nearest)), 'nearest_source_distance_p95': float(np.quantile(nearest, .95)), 'log': log}

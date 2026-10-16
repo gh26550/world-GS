@@ -39,7 +39,7 @@ def mesh_quality(mesh):
 
 
 def observation_masks(depths, valid, poses, K, colors=None, voxel_size=.025, min_views=2,
-                      include_provisional=False, return_confidence=False):
+                      include_provisional=False, return_confidence=False, recover_edges=False):
     """Require depth support from another translated camera, not synthetic re-renders."""
     bases = []
     for d, mask in zip(depths, valid):
@@ -54,7 +54,8 @@ def observation_masks(depths, valid, poses, K, colors=None, voxel_size=.025, min
         bases.append(binary_erosion(good, iterations=1) & ~binary_dilation(edge, iterations=1))
     accepted, reports, confidences = [], [], []
     for i, (depth, pose) in enumerate(zip(depths, poses)):
-        ids = np.flatnonzero(bases[i])
+        candidate = np.isfinite(depth) & (depth > .2) if recover_edges else bases[i]
+        ids = np.flatnonzero(candidate)
         world = lift(depth, K, pose).reshape(-1, 3)[ids]
         agree, conflict = np.zeros(len(ids), int), np.zeros(len(ids), int)
         for j, other in enumerate(poses):
@@ -76,12 +77,23 @@ def observation_masks(depths, valid, poses, K, colors=None, voxel_size=.025, min
             agree[k] += matched
             # A point behind another surface may simply be occluded, not erroneous.
             conflict[k] += trusted & (points[k, 2] < measured-tolerance)
-        keep = (agree+1 >= min_views) & (agree >= 2*conflict)
+        own_trusted = valid[i].ravel()[ids]
+        keep = (agree+own_trusted >= min_views) & (agree >= 2*conflict)
         provisional = np.zeros_like(keep)
         if include_provisional:
             gy, gx = np.gradient(np.log(np.maximum(depth, .2)))
             smooth = (np.hypot(gx, gy).ravel()[ids] < .015)
-            provisional = (~keep) & (agree == 0) & (conflict == 0) & smooth
+            if recover_edges:
+                # At an occlusion edge, require a coherent one-sided neighbourhood;
+                # do not delete both sides of every depth discontinuity.
+                padded = np.pad(depth, 1, mode='edge')
+                support = np.zeros_like(depth, int)
+                for dy in range(3):
+                    for dx in range(3):
+                        neighbour = padded[dy:dy+depth.shape[0], dx:dx+depth.shape[1]]
+                        support += np.isfinite(neighbour) & (np.abs(neighbour-depth) < .02*np.maximum(depth, .2))
+                smooth |= support.ravel()[ids] >= 4
+            provisional = (~keep) & own_trusted & (agree == 0) & (conflict == 0) & smooth
         confidence = np.zeros_like(depth, np.float32)
         confidence.ravel()[ids[keep]] = 1.
         confidence.ravel()[ids[provisional]] = .25
@@ -92,7 +104,9 @@ def observation_masks(depths, valid, poses, K, colors=None, voxel_size=.025, min
         confidences.append(confidence)
         reports.append(dict(index=i, candidates=len(ids), accepted=int(keep.sum()),
             accepted_fraction=float(mask.mean()), conflicting_points=int((conflict > 0).sum()),
-            provisional_points=int(provisional.sum()), trusted_points=int((confidence == 1).sum())))
+            provisional_points=int(provisional.sum()), trusted_points=int((confidence == 1).sum()),
+            recovered_edge_points=int((keep & ~bases[i].ravel()[ids]).sum()),
+            recovered_previously_masked_points=int((keep & ~own_trusted).sum())))
     return (accepted, reports, confidences) if return_confidence else (accepted, reports)
 
 
@@ -168,14 +182,16 @@ def surface_points(mesh, count=300000, seed=0):
         normals=normals[keep].astype('float32'), triangle_ids=faces[keep], barycentric=bary[keep].astype('float32'))
 
 
-def rebuild_mesh_scene(path, output, voxel_size=.025, min_views=2, allow_observations=False, strict_support=False):
+def rebuild_mesh_scene(path, output, voxel_size=.025, min_views=2, allow_observations=False, strict_support=False,
+                       holdout_keyframe=None):
     from .expansion import SharedRGBDRenderer
     from .mesh_pipeline import make_contact
     if not .005 <= voxel_size <= .1 or min_views < 2:
         raise ValueError('voxel-size must be .005..0.1; min-views must be >=2')
     source, output = Path(path), Path(output)
     meta = json.loads((source/'scene.json').read_text())
-    if meta.get('mode') == 'global_tsdf_v6':
+    baseline_mesh = source/'scene_mesh.glb'
+    if meta.get('mode') in ('global_tsdf_v6', 'global_tsdf_v7'):
         source = Path(meta['observation_source'])
         meta = json.loads((source/'scene.json').read_text())
     if meta.get('mode') not in ('progressive_rgbd_v4', 'progressive_rgbd_v5'):
@@ -188,8 +204,10 @@ def rebuild_mesh_scene(path, output, voxel_size=.025, min_views=2, allow_observa
     keyframes = [meta['frames'][0]]+[f for f in meta['frames'] if 'generated_fraction' in f]
     if len(keyframes) < 4:
         raise ValueError('Insufficient source keyframes')
-    # Excluded from both support selection and integration, not just the GS optimizer.
-    reserved = len(keyframes)//3
+    # Production uses all available inputs. Leave-one-view-out is an explicit experiment.
+    reserved = holdout_keyframe
+    if reserved is not None and not 0 <= reserved < len(keyframes):
+        raise ValueError('holdout-keyframe is outside the source keyframe list')
     fusion_frames = [f for i, f in enumerate(keyframes) if i != reserved]
     K = np.array(meta['K'])
     colors = [np.asarray(Image.open(source/f['file_path']).convert('RGB')) for f in fusion_frames]
@@ -197,12 +215,15 @@ def rebuild_mesh_scene(path, output, voxel_size=.025, min_views=2, allow_observa
     valid = [np.load(source/f['mask_file']) for f in fusion_frames]
     poses = [np.array(f['transform_matrix']) for f in fusion_frames]
     masks, support, confidences = observation_masks(depths, valid, poses, K, colors, voxel_size, min_views,
-        include_provisional=not strict_support, return_confidence=True)
+        include_provisional=not strict_support, return_confidence=True, recover_edges=True)
     (output/'support_report.json').write_text(json.dumps(support, indent=2))
     fused = fuse_tsdf(depths, colors, poses, K, masks, voxel_size, confidences)
     mesh = clean_fused_mesh(fused, voxel_size)
+    from .hole_repair import repair_small_mesh_holes
+    mesh, patch_report = repair_small_mesh_holes(mesh, depths, valid, poses, K, voxel_size)
+    (output/'hole_repair.json').write_text(json.dumps(patch_report, indent=2))
     after = mesh_quality(mesh)
-    before = mesh_quality(trimesh.load(source/'scene_mesh.glb', force='mesh', process=False))
+    before = mesh_quality(trimesh.load(baseline_mesh, force='mesh', process=False))
     passed = after['finite'] and after['triangles'] >= 100 and after['degenerate_faces'] == 0 and after['nonmanifold_edges'] == 0 and after['max_edge'] <= 4*voxel_size
     quality = dict(passed=bool(passed), before=before, after=after, voxel_size=voxel_size,
         min_views=min_views, strict_support=strict_support, reserved_keyframe=reserved, reserved_used_for_fusion=False,
@@ -233,18 +254,20 @@ def rebuild_mesh_scene(path, output, voxel_size=.025, min_views=2, allow_observa
         if accepted.mean() >= .03:
             save(rgb, hit['depth'], accepted, pose, frames, 'view', 'original_keyframe_on_validated_fused_surface',
                  source_keyframe=f['file_path'], valid_fraction=float(accepted.mean()), confidence=confidences[i]*accepted)
-    # A keyframe excluded from fusion provides a stronger (still synthetic) consistency check.
-    f = keyframes[reserved]
-    pose = np.array(f['transform_matrix'])
-    rgb, d = np.asarray(Image.open(source/f['file_path'])), np.load(source/f['depth_file'])
-    mask = np.load(source/f['mask_file'])
-    hit = renderer.render(K, pose, meta['size'])
-    evaluation_mask = mask & (hit['depth'] > 0)
-    check = dict(keyframe=reserved, covered_fraction=float(evaluation_mask.mean()),
-        median_relative_depth_error=float(np.median(np.abs(hit['depth'][evaluation_mask]/d[evaluation_mask]-1))) if evaluation_mask.any() else None,
-        note='source frame excluded from fusion; generated source is not independent real-world ground truth')
+    if reserved is not None:
+        f = keyframes[reserved]
+        pose = np.array(f['transform_matrix'])
+        rgb, d = np.asarray(Image.open(source/f['file_path'])), np.load(source/f['depth_file'])
+        mask = np.load(source/f['mask_file'])
+        hit = renderer.render(K, pose, meta['size'])
+        evaluation_mask = mask & (hit['depth'] > 0)
+        check = dict(keyframe=reserved, covered_fraction=float(evaluation_mask.mean()),
+            median_relative_depth_error=float(np.median(np.abs(hit['depth'][evaluation_mask]/d[evaluation_mask]-1))) if evaluation_mask.any() else None,
+            note='source frame excluded from fusion; generated source is not independent real-world ground truth')
+        save(rgb, d, evaluation_mask, pose, heldout, 'heldout', 'keyframe_excluded_from_fusion', used_for_fusion=False)
+    else:
+        check = dict(keyframe=None, note='production fusion uses all input keyframes; render holdouts are not independent ground truth')
     (output/'fusion_holdout.json').write_text(json.dumps(check, indent=2))
-    save(rgb, d, evaluation_mask, pose, heldout, 'heldout', 'keyframe_excluded_from_fusion', used_for_fusion=False)
     for f in meta.get('heldout_frames', []):
         pose = np.array(f['transform_matrix'])
         hit = renderer.render(K, pose, meta['size'])
@@ -262,11 +285,12 @@ def rebuild_mesh_scene(path, output, voxel_size=.025, min_views=2, allow_observa
     (output/'mesh_quality.json').write_text(json.dumps(quality, indent=2))
     if not quality['passed']:
         raise ValueError('GS seeds do not agree with the validated fused mesh')
-    new_meta = dict(mode='global_tsdf_v6', prompt=meta['prompt'], seed=meta['seed'], demo=meta['demo'],
+    new_meta = dict(mode='global_tsdf_v7', prompt=meta['prompt'], seed=meta['seed'], demo=meta['demo'],
         size=meta['size'], K=meta['K'], frames=frames, heldout_frames=heldout,
         convention=meta['convention'], observation_source=str(source.resolve()), voxel_size=voxel_size, min_views=min_views,
         room_size_prior=meta.get('room_size_prior'), mesh_triangles=len(mesh.faces), point_count=len(points['xyz']),
         strict_support=strict_support, provisional_policy='none' if strict_support else 'smooth uncontradicted single-view surface, weight .25',
+        render_min_incidence=.02, coverage_loss_weight=.05, holdout_keyframe=reserved,
         geometry_constraint='no hard projection or mesh position prior; seeds sampled on validated fused surface',
         limitations=['relative generated depth and camera assumptions remain', 'provisional single-view surfaces are uncertain; contradicted surfaces excluded',
             'fine details below voxel resolution may be lost', 'view support is not independent real-world evidence', 'not dynamically relightable'])

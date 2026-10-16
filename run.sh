@@ -15,7 +15,7 @@ export CUDA_HOME="${CUDA_HOME:-/usr/local/cuda}"
 export PATH="$CUDA_HOME/bin:$PATH"
 export MAX_JOBS="${MAX_JOBS:-2}"
 export NUM_CHANNELS="${NUM_CHANNELS:-3,4}"
-if [[ "${1:-}" == train ]]; then
+if [[ "${1:-}" == train || "${1:-}" == audit-holes ]]; then
   export TORCH_CUDA_ARCH_LIST="${WORLDGS_CUDA_ARCH:-$("$python" -c 'import torch; a,b=torch.cuda.get_device_capability(); print(f"{a}.{b}")')}"
 fi
 exec "$python" -m worldgs.cli "$@"

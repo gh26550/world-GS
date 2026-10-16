@@ -6,6 +6,8 @@
 
 v6では生成したRGB-Dをそのまま板状メッシュとして追加する最終処理を廃止し、視点間の支持を検査してTSDFで全体を融合します。低信頼の暫定面は融合・学習の重みを下げます。GS初期点は検査に通った最終メッシュの面からのみ採り、不合格メッシュでは学習を停止します。[メッシュの作り方・修正内容・比較](docs/mesh-v6.md)を参照してください。元画像の不整合を解決する方法や、穴のない物体メッシュを生成する方法ではありません。
 
+v7は穴の原因をメッシュ欠落とGSの不透明度不足に分け、製品用では全入力視点を融合します。境界画素の回復、元深度で支持される小穴の局所補修、既知の面の被覆損失、空間分布を保つ初期点・点数制限を導入しました。[穴の原因・修正と比較](docs/holes-v7.md)を参照してください。
+
 未観測内容は生成による仮説であり、実物の復元ではありません。単眼深度による歪み、継ぎ目、家具の重複や欠落は残ります。形状を持つRGB-Dパッチの蓄積であり、各家具を閉じた完全なメッシュとして復元するものではありません。v3の手続き的家具は `--mode mesh`、v2は `--mode room`、初期方式は `--mode legacy` で保持しています。
 
 深度・境界の修正版v5では、逆深度の倍率とオフセットを外れ値に頑健に合わせ、物体境界をまたがない深度補正と狭い範囲の色調整を行います。重なり部分の三角形も利用して接続の隙間を減らします。詳細は [深度・境界修正](docs/depth-seams-v5.md) を参照してください。
@@ -39,6 +41,12 @@ bash setup.sh
 
 `--min-views` は高信頼面の支持視点数です。既定では他視点と矛盾しない滑らかな単視点面も低信頼（重み0.25）で保持します。`--strict-support` を追加すると単視点面を除外するため、穴が増えます。Open3D 0.19.0が必要で、`setup.sh` は `meshing` 依存も導入します。
 
+既定では入力キーフレームを全て使います。融合・学習から1視点を除外する実験だけ、`rebuild-mesh` に `--holdout-keyframe INDEX` を追加してください。穴の診断はGPU環境で以下を実行します。
+
+```bash
+./run.sh audit-holes runs/livingroom_fused_new --output runs/livingroom_fused_new_audit
+```
+
 保存先には空のディレクトリが必要です。比較で既存画像を使う場合のみ `--front-image runs/livingroom/front.png` を指定します。通常はプロンプトから生成します。初回はモデル取得とCUDAビルドに時間がかかります。`run.sh` は外部環境とGPUアーキテクチャを設定します。環境変更は `WORLDGS_VENV`、GPU指定は `WORLDGS_CUDA_ARCH` を使用します。空白のある `.venv` のリンクエラーは引用符を増やしても解消しません。
 
 ## 出力（expandモード）
@@ -49,6 +57,7 @@ bash setup.sh
 - v6の最終 `scene_mesh.glb` は融合メッシュです。新しい生成・深度修正では `observations/` に補完処理の中間データを保存します。中間パッチはGSの最終メッシュではありません。
 - `mesh_quality.json`, `support_report.json`, `fusion_holdout.json`: 面の品質、視点の支持、融合から除外した視点での確認。
 - `view_confidence_*.npy`: 高信頼1.0・暫定0.25・無効0の学習重み。
+- `hole_repair.json`: 小穴候補の深度検証・採用数。`heldout_alpha_*.npy`: 学習後の不透明度。
 - `guide_*.png`, `completion_mask_*.png`, `completion_history.json`: 各視点のガイド、補完領域、形状追加・整合率の記録。
 - `raw_depth_*.npy`, `depth_diagnostics.json`: 補正前の推定深度、外れ値・校正・境界段差の記録。
 - `view_*.png`, `view_depth_*.npy`, `view_mask_*.npy`: 学習用の描画・深度・有効マスク。

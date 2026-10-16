@@ -1,0 +1,48 @@
+{
+  "tests_passed": 52,
+  "cameras_compared": 23,
+  "before": {
+    "mean_mesh_missing_on_source": 0.1415303844442718,
+    "mean_gs_alpha_below_half_on_mesh": 0.05375062873536985,
+    "mean_gs_alpha_below_95_on_mesh": 0.44382213038558804,
+    "mean_grazing_rejected_fraction": 0.002344988394474638
+  },
+  "after": {
+    "mean_mesh_missing_on_source": 0.0803926018591896,
+    "mean_gs_alpha_below_half_on_mesh": 2.596112931897419e-05,
+    "mean_gs_alpha_below_95_on_mesh": 0.03838524895695281,
+    "mean_grazing_rejected_fraction": 1.4153079710144924e-05
+  },
+  "common_visible_surface_alpha_below_half_before": 0.053686836064420464,
+  "common_visible_surface_alpha_below_half_after": 1.0843335511628645e-05,
+  "mesh_quality": {
+    "vertices": 318050,
+    "triangles": 591371,
+    "finite": true,
+    "components": 90,
+    "small_components_under_50_faces": 8,
+    "boundary_edges": 46159,
+    "nonmanifold_edges": 0,
+    "boundary_edge_fraction": 0.050716596201007325,
+    "degenerate_faces": 0,
+    "aspect_p95": 5.426480101922871,
+    "needle_face_fraction": 0.004809163790581547,
+    "max_edge": 0.07494443439155082,
+    "surface_area": 153.83503173719996,
+    "small_component_area_fraction": 5.149232213651263e-05
+  },
+  "mesh_patch": {
+    "proposed": 10764,
+    "depth_supported": 9781,
+    "accepted": 9651,
+    "radius": 0.18,
+    "policy": "all four cap samples need source-depth support and no free-space contradiction"
+  },
+  "exported_seed_error_max": 5.93740446263616e-07,
+  "steps": 2000,
+  "gaussians": 180000,
+  "sh_degree": 3,
+  "train_views": 20,
+  "heldout_views": 3,
+  "scope": "Compared with generated source depth and estimated meshes, not real-world geometry; remaining large unsupported holes are not filled"
+}

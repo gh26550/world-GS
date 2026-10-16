@@ -27,6 +27,10 @@ def main():
     rebuild.add_argument('--voxel-size', type=float, default=.025)
     rebuild.add_argument('--min-views', type=int, default=2)
     rebuild.add_argument('--strict-support', action='store_true', help='Discard all single-view surfaces; increases holes')
+    rebuild.add_argument('--holdout-keyframe', type=int, help='Optional leave-one-input-out experiment; production uses all inputs')
+    audit = sub.add_parser('audit-holes', help='Separate mesh gaps, grazing-angle rejection and Gaussian opacity deficits')
+    audit.add_argument('path')
+    audit.add_argument('--output', required=True)
     args = vars(parser.parse_args())
     command = args.pop('command')
     if command == 'generate':
@@ -38,6 +42,9 @@ def main():
     elif command == 'rebuild-mesh':
         from .mesh_fusion import rebuild_mesh_scene
         rebuild_mesh_scene(**args)
+    elif command == 'audit-holes':
+        from .hole_audit import audit_holes
+        audit_holes(**args)
     else:
         from .train import train
         train(**args)

@@ -1,0 +1,7 @@
+{
+  "proposed": 10764,
+  "depth_supported": 9781,
+  "accepted": 9651,
+  "radius": 0.18,
+  "policy": "all four cap samples need source-depth support and no free-space contradiction"
+}
