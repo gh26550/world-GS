@@ -1,0 +1,21 @@
+{
+  "mode": "progressive_rgbd_v5",
+  "source": "runs/livingroom_expand_v4_final",
+  "output": "runs/livingroom_depth_seams_v5_final",
+  "tests_passed": 33,
+  "train_views": 29,
+  "heldout_views": 3,
+  "seed_points": 421317,
+  "triangles": 726232,
+  "inverse_affine_views": 14,
+  "spikes_replaced": 135,
+  "median_heldout_scale_log_error": 0.20131256127728908,
+  "median_heldout_selected_log_error": 0.11135966554056723,
+  "median_seam_log_jump_before": 0.12067010064725073,
+  "median_seam_log_jump_after": 0.011146902318093241,
+  "evaluation_scope": "Calibration and seam metrics compare against shared estimated geometry, not independent ground truth",
+  "steps": 2000,
+  "final_gaussians": 180000,
+  "sh_degree": 3,
+  "ply_bytes": 44641531
+}

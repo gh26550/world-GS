@@ -10,27 +10,22 @@ from .geometry import intrinsics, camera, mesh as depth_mesh
 from .room import make_layout, pose_at
 from .mesh_scene import build_components, MeshRenderer
 from .mesh_pipeline import make_contact
+from .depth_fusion import align_inverse_depth, refine_prediction, feather_color_seam
 
 
 def calibrated_depth(predicted, reference, observed, bounds):
     """Keep shared observations exact; estimate new depth without fixing proxy surfaces."""
-    good = observed & (reference > 0) & np.isfinite(predicted) & (predicted > 0)
-    if good.sum() >= 32:
-        scale = np.median(reference[good]/predicted[good])
-        method = 'shared_rgbd_overlap'
-    else:
-        # Relative depth has no metric scale. Enclosing room supplies only a scale prior.
-        scale = np.quantile(bounds[bounds > 0], .65)/max(np.quantile(predicted, .85), .01)
-        method = 'room_scale_prior'
-    depth = np.clip(predicted*scale, .25, np.maximum(bounds, .26))
-    depth[observed] = reference[observed]
-    return depth, method
+    depth, report = align_inverse_depth(predicted, reference, observed, bounds)
+    return depth, report['method']
 
 
-def patch_geometry(rgb, depth, K, pose, accept, stride=2):
+def patch_geometry(rgb, depth, K, pose, accept, stride=2, stitch=False, valid=None):
     vertices, faces = depth_mesh(depth, K, pose, stride=stride, edge=.10)
     accepted = accept[::stride, ::stride].ravel()
-    faces = faces[accepted[faces].all(-1)]
+    keep = accepted[faces].any(-1) if stitch else accepted[faces].all(-1)
+    if valid is not None:
+        keep &= valid[::stride, ::stride].ravel()[faces].all(-1)
+    faces = faces[keep]
     if not len(faces):
         return None
     used, remap = np.unique(faces, return_inverse=True)
@@ -105,7 +100,7 @@ def direction_prompt(yaw, pitch):
     return f'room direction {yaw:.0f} degrees away from the original view'
 
 
-def generate_expanded_scene(prompt, output, size, views, seed, demo, front_image, room_size):
+def generate_expanded_scene(prompt, output, size, views, seed, demo, front_image, room_size, repair_source=None):
     from .pipeline import Models
     if size < 64 or size % 8 or views < 8:
         raise ValueError('size >=64 and divisible by 8; views >=8')
@@ -118,6 +113,8 @@ def generate_expanded_scene(prompt, output, size, views, seed, demo, front_image
     (output/'meshes').mkdir()
     K = intrinsics(size)
     models = None if demo else Models(seed)
+    source_meta = json.loads((Path(repair_source)/'scene.json').read_text()) if repair_source else None
+    source_frames = ([source_meta['frames'][0]]+[f for f in source_meta['frames'] if 'generated_fraction' in f]) if source_meta else None
     if demo:
         yy, xx = np.indices((size, size))
         image = Image.fromarray(np.uint8(np.stack([40+xx/size*150, 40+yy/size*130, np.full_like(xx, 100)], -1)))
@@ -133,13 +130,15 @@ def generate_expanded_scene(prompt, output, size, views, seed, demo, front_image
     proxy, _, components, owners = build_components(layout, image)
     proxy.export(output/'initial_scaffold.glb')
     guide = MeshRenderer(proxy, components, owners)
-    first = guide.render(K, camera(0), size)
-    depth, _ = calibrated_depth(predicted, first['depth'], np.zeros_like(predicted, bool), first['depth'])
-    shared = patch_geometry(np.asarray(image), depth, K, camera(0), np.ones_like(depth, bool))
+    room_mesh, _, room_components, room_owners = build_components(layout[:1], image)
+    enclosure = MeshRenderer(room_mesh, room_components, room_owners)
+    first = enclosure.render(K, camera(0), size)
+    depth, front_valid, front_report = refine_prediction(predicted, first['depth'], np.zeros_like(predicted, bool), first['depth'], np.asarray(image))
+    shared = patch_geometry(np.asarray(image), depth, K, camera(0), front_valid)
     if shared is None:
         raise ValueError('Front depth has no valid triangles')
     frames, heldout, history = [], [], []
-    observations = [(camera(0), depth, depth > 0)]
+    observations = [(camera(0), depth, front_valid)]
 
     def save_frame(rgb, d, valid, pose, prefix, records, **extra):
         i = len(records)
@@ -150,16 +149,25 @@ def generate_expanded_scene(prompt, output, size, views, seed, demo, front_image
         records.append(dict(file_path=filename, depth_file=f'{prefix}_depth_{i:03d}.npy',
             mask_file=f'{prefix}_mask_{i:03d}.npy', transform_matrix=pose.tolist(), target='generated_scene', **extra))
 
-    save_frame(np.asarray(image), depth, depth > 0, camera(0), 'view', frames, reference_source='front_image_predicted_depth')
+    save_frame(np.asarray(image), depth, front_valid, camera(0), 'view', frames, reference_source='front_image_predicted_depth')
+    depth_reports = [dict(index=0, **front_report)]
     for index, (yaw, pitch, pose) in enumerate(expansion_poses(views)[1:], 1):
         observation = SharedRGBDRenderer(shared).render(K, pose, size)
         bounds = guide.render(K, pose, size)
+        room_bounds = enclosure.render(K, pose, size)['depth']
         observed = binary_erosion(observation['depth'] > 0, iterations=2)
         missing = ~observed
         # Fill cracks from neighbouring shared pixels, but leave their mask open for completion.
         guide_rgb = bounds['rgb'].copy()
         guide_rgb[observed] = observation['rgb'][observed]
-        if demo:
+        if repair_source:
+            old = source_frames[index]
+            if not np.allclose(pose, old['transform_matrix']):
+                raise ValueError('Source keyframe trajectory differs from the repair trajectory')
+            generated = np.asarray(Image.open(Path(repair_source)/old['file_path']).convert('RGB')).copy()
+            generated[observed] = observation['rgb'][observed]
+            new_prediction = models.depth(Image.fromarray(generated)) if not demo else np.maximum(room_bounds*.8, .3)
+        elif demo:
             generated = guide_rgb.copy()
             generated[missing] = np.uint8([(seed+index*43)%180+40, 90+index%4*20, 110])
             new_prediction = np.maximum(bounds['depth']*.8, .3)
@@ -172,12 +180,16 @@ def generate_expanded_scene(prompt, output, size, views, seed, demo, front_image
             new_prediction = models.depth(Image.fromarray(generated))
         else:
             generated, new_prediction = guide_rgb, observation['depth']
-        fused_depth, alignment = calibrated_depth(new_prediction, observation['depth'], observed, bounds['depth'])
+        np.save(output/f'raw_depth_{index:03d}.npy', new_prediction)
+        fused_depth, depth_valid, depth_report = refine_prediction(new_prediction, observation['depth'], observed, room_bounds, generated)
+        alignment = depth_report['method']
+        depth_reports.append(dict(index=index, **depth_report))
+        generated = feather_color_seam(generated, observation['rgb'], observed, fused_depth, observation['depth'])
         generated = generated.copy()
         generated[observed] = observation['rgb'][observed]
         Image.fromarray(guide_rgb).save(output/f'guide_{index:03d}.png')
         Image.fromarray(np.uint8(missing)*255).save(output/f'completion_mask_{index:03d}.png')
-        patch = patch_geometry(generated, fused_depth, K, pose, missing)
+        patch = patch_geometry(generated, fused_depth, K, pose, missing, stitch=True, valid=depth_valid)
         added = 0
         if patch is not None:
             patch = filter_visibility_conflicts(patch, observations, K)
@@ -186,7 +198,7 @@ def generate_expanded_scene(prompt, output, size, views, seed, demo, front_image
                 patch.export(output/'meshes'/f'generated_patch_{index:03d}.glb')
                 shared = trimesh.util.concatenate([shared, patch])
         supported = SharedRGBDRenderer(shared).render(K, pose, size)['depth']
-        consistent = observed | ((supported > 0) & (np.abs(supported-fused_depth) < .08*np.maximum(fused_depth, 1.)))
+        consistent = depth_valid & (observed | ((supported > 0) & (np.abs(supported-fused_depth) < .08*np.maximum(fused_depth, 1.))))
         observations.append((pose, fused_depth, consistent))
         save_frame(generated, fused_depth, consistent, pose, 'view', frames,
             reference_source='shared_reprojection_and_diffusion_rgbd' if not demo else 'synthetic_fixture',
@@ -194,6 +206,7 @@ def generate_expanded_scene(prompt, output, size, views, seed, demo, front_image
         history.append(dict(yaw=yaw, pitch=pitch, generated_fraction=float(missing.mean()),
             added_triangles=added, consistent_fraction=float(consistent.mean()), depth_alignment=alignment))
         (output/'completion_history.json').write_text(json.dumps(history, indent=2), encoding='utf-8')
+        (output/'depth_diagnostics.json').write_text(json.dumps(depth_reports, indent=2), encoding='utf-8')
         print(f'Completion {index}/{len(expansion_poses(views))-1}: yaw={yaw:.0f} pitch={pitch} new={missing.mean():.1%} added_triangles={added}', flush=True)
     del models
     gc.collect()
@@ -240,7 +253,7 @@ def generate_expanded_scene(prompt, output, size, views, seed, demo, front_image
     _, keep = np.unique(np.round(xyz/.015), axis=0, return_index=True)
     np.savez_compressed(output/'points.npz', xyz=xyz[keep].astype('float32'), rgb=rgb[keep], normals=normal[keep].astype('float32'))
     poses = np.array([f['transform_matrix'] for f in frames])
-    meta = dict(mode='progressive_rgbd_v4', prompt=prompt, seed=seed, demo=demo, size=size, K=K.tolist(),
+    meta = dict(mode='progressive_rgbd_v5', prompt=prompt, seed=seed, demo=demo, size=size, K=K.tolist(),
         convention='OpenCV camera-to-world, x right y down z forward', frames=frames, heldout_frames=heldout,
         geometry_constraint='none; generated depth cue annealed during GS fitting', point_count=len(keep),
         reference_source='progressive diffusion completion with shared RGBD reprojection and updated geometry',
@@ -248,9 +261,24 @@ def generate_expanded_scene(prompt, output, size, views, seed, demo, front_image
         mesh_triangles=len(shared.faces), initial_scaffold_is_teacher=False,
         room_size_prior=list(room_size), controlnet_strength=.35,
         depth_model='depth-anything/Depth-Anything-V2-Small-hf' if not demo else 'synthetic_fixture',
+        depth_alignment='robust inverse affine with heldout selection and edge-aware seam correction',
+        repair_source=str(repair_source) if repair_source else None,
         limitations=['unseen content is generated, not recovered truth', 'relative monocular depth can warp geometry',
             'reprojection preserves observed pixels but does not guarantee global semantic consistency',
             'heldout references derive from generated geometry, not real photographs', 'not dynamically relightable'])
     (output/'scene.json').write_text(json.dumps(meta, indent=2), encoding='utf-8')
     make_contact(output, frames, 'references.jpg')
     return meta
+
+
+def repair_depth_scene(path, output):
+    source = Path(path)
+    meta = json.loads((source/'scene.json').read_text())
+    if meta.get('mode') not in ('progressive_rgbd_v4', 'progressive_rgbd_v5'):
+        raise ValueError('refine-depth requires an expand-mode scene')
+    keyframes = [meta['frames'][0]]+[f for f in meta['frames'] if 'generated_fraction' in f]
+    views = sum(f.get('pitch', 0) == 0 for f in keyframes)
+    if len(keyframes) != max(12, views)+8:
+        raise ValueError('Incomplete expansion keyframes')
+    return generate_expanded_scene(meta['prompt'], output, meta['size'], views, meta['seed'], meta['demo'],
+        str(source/'front.png'), meta.get('room_size_prior', [8., 3., 8.]), repair_source=source)

@@ -18,11 +18,17 @@ def main():
     train.add_argument('path')
     train.add_argument('--steps', type=int, default=1000)
     train.add_argument('--max-points', type=int, default=100000)
+    repair = sub.add_parser('refine-depth', help='Re-estimate depth and rebuild seams using existing expand keyframe images')
+    repair.add_argument('path')
+    repair.add_argument('--output', required=True)
     args = vars(parser.parse_args())
     command = args.pop('command')
     if command == 'generate':
         from .pipeline import generate
         generate(**args)
+    elif command == 'refine-depth':
+        from .expansion import repair_depth_scene
+        repair_depth_scene(**args)
     else:
         from .train import train
         train(**args)

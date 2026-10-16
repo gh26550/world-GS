@@ -22,7 +22,7 @@ def train_mesh(path, steps, max_points):
     from gsplat.strategy.ops import remove
     path = Path(path)
     meta = json.loads((path/'scene.json').read_text())
-    expanded = meta.get('mode') == 'progressive_rgbd_v4'
+    expanded = meta.get('mode') in ('progressive_rgbd_v4', 'progressive_rgbd_v5')
     torch.manual_seed(meta['seed'])
     if not torch.cuda.is_available() or steps < 1 or max_points < 1:
         raise ValueError('CUDA and positive steps/point limit required')
@@ -144,7 +144,7 @@ def train_mesh(path, steps, max_points):
         canvas.paste(prediction.resize((256, 256)), (x, y+256))
     canvas.save(path/'heldout_preview.png')
     nearest = tree.query(means, workers=2)[0]
-    training = {'trainer': 'generated_rgbd_3dgs_v4' if expanded else 'free_3dgs_mesh_references_v3', 'steps': steps, 'initial_points': n, 'final_points': len(means),
+    training = {'trainer': ('generated_rgbd_3dgs_v5' if meta.get('mode') == 'progressive_rgbd_v5' else 'generated_rgbd_3dgs_v4') if expanded else 'free_3dgs_mesh_references_v3', 'steps': steps, 'initial_points': n, 'final_points': len(means),
         'mesh_prior_weight': 0. if expanded else .1, 'depth_weight_schedule': [.1, .02] if expanded else [.1, .1],
         'trainable': list(parameters.keys()), 'hard_projection': False, 'densification': True, 'sh_degree': degree,
         'nearest_source_distance_median': float(np.median(nearest)), 'nearest_source_distance_p95': float(np.quantile(nearest, .95)), 'log': log}

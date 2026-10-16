@@ -6,6 +6,8 @@
 
 未観測内容は生成による仮説であり、実物の復元ではありません。単眼深度による歪み、継ぎ目、家具の重複や欠落は残ります。形状を持つRGB-Dパッチの蓄積であり、各家具を閉じた完全なメッシュとして復元するものではありません。v3の手続き的家具は `--mode mesh`、v2は `--mode room`、初期方式は `--mode legacy` で保持しています。
 
+深度・境界の修正版v5では、逆深度の倍率とオフセットを外れ値に頑健に合わせ、物体境界をまたがない深度補正と狭い範囲の色調整を行います。重なり部分の三角形も利用して接続の隙間を減らします。詳細は [深度・境界修正](docs/depth-seams-v5.md) を参照してください。
+
 ## セットアップと実行（Ubuntu / WSL）
 
 Python 3.10〜3.12、CUDA toolkitとC++コンパイラが必要です。仮想環境は空白のない `~/.venvs/world-gs` に作ります。
@@ -17,6 +19,15 @@ bash setup.sh
 ./run.sh train runs/livingroom_expand_new --steps 2000 --max-points 60000
 ```
 
+既存のexpandモードの画像を再利用して深度と境界だけを修正する場合：
+
+```bash
+./run.sh refine-depth runs/livingroom_expand_v4_final --output runs/livingroom_depth_fixed_new
+./run.sh train runs/livingroom_depth_fixed_new --steps 2000 --max-points 60000
+```
+
+`refine-depth` は既存のキーフレーム画像から深度を再推定し、共有形状と参照点を再構築します。画像の新規生成は行いません。GSは修正先のフォルダで再学習します。
+
 保存先には空のディレクトリが必要です。比較で既存画像を使う場合のみ `--front-image runs/livingroom/front.png` を指定します。通常はプロンプトから生成します。初回はモデル取得とCUDAビルドに時間がかかります。`run.sh` は外部環境とGPUアーキテクチャを設定します。環境変更は `WORLDGS_VENV`、GPU指定は `WORLDGS_CUDA_ARCH` を使用します。空白のある `.venv` のリンクエラーは引用符を増やしても解消しません。
 
 ## 出力（expandモード）
@@ -25,6 +36,7 @@ bash setup.sh
 - `initial_scaffold.glb`: 制御用の初期メッシュ。最終教師ではありません。
 - `scene_mesh.glb`, `proxy_scene.obj`, `meshes/generated_patch_*.glb`: 生成RGB-Dで更新した全体形状と追加パッチ。
 - `guide_*.png`, `completion_mask_*.png`, `completion_history.json`: 各視点のガイド、補完領域、形状追加・整合率の記録。
+- `raw_depth_*.npy`, `depth_diagnostics.json`: 補正前の推定深度、外れ値・校正・境界段差の記録。
 - `view_*.png`, `view_depth_*.npy`, `view_mask_*.npy`: 学習用の描画・深度・有効マスク。
 - `heldout_*.png`, `scene.json`, `references.jpg`: 評価用描画、全カメラ姿勢と内部パラメータ、参照一覧。
 - `points.npz`: 補完画像と推定深度から融合した初期点群。
