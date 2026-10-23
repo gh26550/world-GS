@@ -61,7 +61,7 @@ def build_components(layout, image):
             color = [151, 104, 65] if mat == 'wood' else wall
             box(a, b, f'room_{axis}_{side}', 'room', color, material=mat)
     for shape in layout[1:]:
-        a, b = np.array(shape['min']), np.array(shape['max'])
+        a, b = np.array(shape.get('local_min', shape['min'])), np.array(shape.get('local_max', shape['max']))
         width, height, depth = b-a
         group = shape['name']
         label = shape.get('label', '')
@@ -123,6 +123,15 @@ def build_components(layout, image):
                     k += 1
         else:
             box(a, b, label, group, [120, 110, 100], rounded=True)
+    for shape in layout[1:]:
+        if not shape.get('yaw'):
+            continue
+        center = (np.asarray(shape['local_min'])+np.asarray(shape['local_max']))/2
+        transform = trimesh.transformations.rotation_matrix(np.deg2rad(shape['yaw']), [0,1,0], point=center)
+        for geometry, part in zip(geometries, components):
+            if part['group'] == shape['name']:
+                geometry.apply_transform(transform)
+                part['bounds'] = geometry.bounds.tolist()
     combined = trimesh.util.concatenate(geometries)
     owners = np.concatenate([np.full(len(m.faces), i, np.int32) for i, m in enumerate(geometries)])
     return combined, geometries, components, owners

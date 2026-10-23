@@ -6,6 +6,11 @@ from PIL import Image
 
 def train(path, steps=1000, max_points=100000):
     meta_file = Path(path)/'scene.json'
+    if json.loads(meta_file.read_text()).get('mode') == 'prompt_mesh_radiance_v9':
+        from .train_teacher import validate_teacher
+        validate_teacher(path)
+        from .train_mesh import train_mesh
+        return train_mesh(path, steps, max_points)
     if json.loads(meta_file.read_text()).get('mode') == 'mesh_teacher_v8':
         from .train_teacher import train_teacher
         return train_teacher(path, steps, max_points)

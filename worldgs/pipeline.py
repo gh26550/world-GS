@@ -173,7 +173,10 @@ def generate_legacy(prompt, output, size=512, views=24, seed=0, demo=False):
 def generate(prompt, output, size=512, views=24, seed=0, demo=False, mode='mesh', front_image=None, room_size=None, layout_file=None):
     if layout_file and mode != 'mesh':
         raise ValueError('--layout-file requires --mode mesh')
-    room_size = room_size or ((8., 3., 8.) if mode in ('mesh', 'expand') else (6., 3., 6.))
+    room_size = room_size or ((8., 3., 8.) if mode in ('scene', 'mesh', 'expand') else (6., 3., 6.))
+    if mode == 'scene':
+        from .prompt_scene import generate_prompt_scene
+        return generate_prompt_scene(prompt,output,size,views,seed,demo,front_image,room_size)
     if mode == 'expand':
         from .expansion import generate_expanded_scene
         from .mesh_fusion import rebuild_mesh_scene

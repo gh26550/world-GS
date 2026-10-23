@@ -27,8 +27,9 @@ def foreground_coverage_loss(alpha, confidence, mask):
 def train_mesh(path, steps, max_points):
     path = Path(path)
     meta = json.loads((path/'scene.json').read_text())
-    expanded = meta.get('mode') in ('progressive_rgbd_v4', 'progressive_rgbd_v5', 'global_tsdf_v6', 'global_tsdf_v7')
-    coverage_mode = meta.get('mode') == 'global_tsdf_v7'
+    prompt_mesh = meta.get('mode') == 'prompt_mesh_radiance_v9'
+    expanded = meta.get('mode') in ('progressive_rgbd_v4', 'progressive_rgbd_v5', 'global_tsdf_v6', 'global_tsdf_v7', 'prompt_mesh_radiance_v9')
+    coverage_mode = meta.get('mode') in ('global_tsdf_v7', 'prompt_mesh_radiance_v9')
     if meta.get('mode') in ('global_tsdf_v6', 'global_tsdf_v7'):
         quality = json.loads((path/'mesh_quality.json').read_text())
         if not quality.get('passed') or quality.get('seed_to_assigned_surface_max', 1.) > 1e-4:
@@ -86,7 +87,7 @@ def train_mesh(path, steps, max_points):
     for step in range(steps):
         degree = min(3, step//300)
         count = len(parameters['means'])
-        if not expanded and (anchors is None or len(anchors) != count or step-last_anchor_step >= 100):
+        if (not expanded or prompt_mesh) and (anchors is None or len(anchors) != count or step-last_anchor_step >= 100):
             nearest = tree.query(cpu(parameters['means']), workers=2)[1]
             anchors, normals = t(source['xyz'][nearest]), t(source['normals'][nearest])
             last_anchor_step = step
@@ -99,16 +100,28 @@ def train_mesh(path, steps, max_points):
         depth_loss = (confidence_loss((rendered[0, ..., 3].clamp_min(.05).log()-depths[i].clamp_min(.05).log()).abs()[supported], confidences[i][supported])
                       if supported.any() else rgb_loss*0)
         # Soft guidance with tolerance. No projection, locked plane, fixed rotation or normal thickness.
-        if expanded:
+        if prompt_mesh:
+            delta = parameters['means']-anchors
+            offset = (delta*normals).sum(-1).abs()
+            structural = t(source['component_ids'][nearest] < 6).bool()
+            tolerance = torch.where(structural, .015, .06)
+            prior = torch.relu(offset-tolerance).mean()+.1*torch.relu(delta.norm(dim=-1)-.15).mean()
+            # Normal thickness is softly bounded on room structure. Rotation,
+            # covariance and furniture geometry are still trainable.
+            q = torch.nn.functional.normalize(parameters['quats'],dim=-1)
+            local = normals+2*torch.linalg.cross(q[:,1:],torch.linalg.cross(q[:,1:],normals)-q[:,:1]*normals)
+            sigma = ((local.square()*parameters['scales'].exp().square()).sum(-1)+1e-12).sqrt()
+            prior = prior+torch.relu(sigma[structural]-.015).mean() if structural.any() else prior
+        elif expanded:
             prior = rgb_loss*0
         else:
             offset = ((parameters['means']-anchors)*normals).sum(-1).abs()
             prior = torch.relu(offset-.04).mean()
         # Generated-depth scenes have no constraint to their initial scaffold.
         # Predicted depth is an uncertain cue; reduce its weight during fitting.
-        depth_weight = .1*(1-.8*step/max(steps-1, 1)) if expanded else .1
+        depth_weight = .2 if prompt_mesh else .1*(1-.8*step/max(steps-1, 1)) if expanded else .1
         coverage_loss = foreground_coverage_loss(alpha[0, ..., 0], confidences[i], valid) if coverage_mode else rgb_loss*0
-        loss = rgb_loss+depth_weight*depth_loss+(0. if expanded else .1)*prior+.05*coverage_loss
+        loss = rgb_loss+depth_weight*depth_loss+(.3 if prompt_mesh else 0. if expanded else .1)*prior+.05*coverage_loss
         if not torch.isfinite(loss):
             raise RuntimeError('Non-finite mesh GS training loss')
         strategy.step_pre_backward(parameters, optimizers, state, step, info)
@@ -170,11 +183,11 @@ def train_mesh(path, steps, max_points):
         canvas.paste(prediction.resize((256, 256)), (x, y+256))
     canvas.save(path/'heldout_preview.png')
     nearest = tree.query(means, workers=2)[0]
-    training = {'trainer': ('coverage_3dgs_v7' if coverage_mode else 'fused_tsdf_3dgs_v6' if meta.get('mode') == 'global_tsdf_v6' else 'generated_rgbd_3dgs_v5' if meta.get('mode') == 'progressive_rgbd_v5' else 'generated_rgbd_3dgs_v4') if expanded else 'free_3dgs_mesh_references_v3', 'steps': steps, 'initial_points': n, 'final_points': len(means),
+    training = {'trainer': 'prompt_mesh_radiance_v9' if prompt_mesh else ('coverage_3dgs_v7' if coverage_mode else 'fused_tsdf_3dgs_v6' if meta.get('mode') == 'global_tsdf_v6' else 'generated_rgbd_3dgs_v5' if meta.get('mode') == 'progressive_rgbd_v5' else 'generated_rgbd_3dgs_v4') if expanded else 'free_3dgs_mesh_references_v3', 'steps': steps, 'initial_points': n, 'final_points': len(means),
         'coverage_loss_weight': .05 if coverage_mode else 0., 'spatially_stratified_sampling': coverage_mode, 'spatial_budget_pruning': coverage_mode,
-        'mesh_prior_weight': 0. if expanded else .1, 'depth_weight_schedule': [.1, .02] if expanded else [.1, .1],
+        'mesh_prior_weight': .3 if prompt_mesh else 0. if expanded else .1, 'depth_weight_schedule': [.2, .2] if prompt_mesh else [.1, .02] if expanded else [.1, .1],
         'trainable': list(parameters.keys()), 'hard_projection': False, 'densification': True, 'sh_degree': degree,
         'nearest_source_distance_median': float(np.median(nearest)), 'nearest_source_distance_p95': float(np.quantile(nearest, .95)), 'log': log}
     (path/'training.json').write_text(json.dumps(training, indent=2), encoding='utf-8')
-    (path/'evaluation.json').write_text(json.dumps({'reference': 'heldout updated generated RGBD geometry renders; not independent ground truth' if expanded else 'heldout triangle mesh renders; not real-world ground truth', 'frames': evaluation}, indent=2), encoding='utf-8')
+    (path/'evaluation.json').write_text(json.dumps({'reference': 'heldout shared photographic surface renders on the same prompt mesh; not independent ground truth' if prompt_mesh else 'heldout updated generated RGBD geometry renders; not independent ground truth' if expanded else 'heldout triangle mesh renders; not real-world ground truth', 'frames': evaluation}, indent=2), encoding='utf-8')
     print(f'Saved {len(means)} freely optimized Gaussians; SH degree {degree}', flush=True)

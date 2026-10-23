@@ -43,7 +43,7 @@ class MeshTeacherTest(unittest.TestCase):
     def test_default_generation_uses_mesh_and_rejects_modified_teacher(self):
         from worldgs.pipeline import generate
         with tempfile.TemporaryDirectory() as folder, patch('worldgs.pipeline.Models', side_effect=AssertionError('Unexpected model inference')):
-            meta = generate('test', folder, size=64, views=8, demo=True)
+            meta = generate('test', folder, size=64, views=8, demo=True, mode='mesh')
             self.assertEqual(meta['mode'], 'mesh_teacher_v8')
             self.assertTrue(all(f['reference_source'] == 'fixed_triangle_mesh_render' for f in meta['frames']))
             validate_teacher(folder)
@@ -58,7 +58,7 @@ class MeshTeacherTest(unittest.TestCase):
     def test_training_rejects_inconsistent_reference_depth(self):
         from worldgs.pipeline import generate
         with tempfile.TemporaryDirectory() as folder:
-            meta = generate('test', folder, size=64, views=8, demo=True)
+            meta = generate('test', folder, size=64, views=8, demo=True, mode='mesh')
             path = Path(folder)/meta['frames'][0]['depth_file']
             depth = np.load(path)
             depth[32, 32] *= .5
@@ -74,6 +74,6 @@ class MeshTeacherTest(unittest.TestCase):
             front = Path(folder)/'front.png'
             Image.new('RGB', (64, 64), 'tan').save(front)
             with patch('worldgs.pipeline.Models', side_effect=AssertionError('Unexpected depth estimation')):
-                meta = generate('test', Path(folder)/'run', size=64, views=8, layout_file=str(layout), front_image=str(front))
+                meta = generate('test', Path(folder)/'run', size=64, views=8, layout_file=str(layout), front_image=str(front), mode='mesh')
             self.assertEqual(meta['front_depth_usage'], 'none; saved layout reused')
             self.assertFalse((Path(folder)/'run'/'front_relative_depth.npy').exists())
