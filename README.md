@@ -1,14 +1,18 @@
 # World-GS
 
-プロンプト → 正面画像 → 初期メッシュ → 全周の画像補完・共有RGB-D形状の更新 → 多視点参照点 → 3D Gaussian Splatting の研究用プロトタイプ。
+プロンプト → 正面画像 → 部屋・家具のメッシュ群 → メッシュから360°参照画像・深度を描画 → 形状を保持して3D Gaussian Splattingを学習する研究用プロトタイプ。
 
-既定の `--mode expand` は未観測の側面・背面・上下をControlNet付き画像補完で生成し、推定深度から共有形状へ追加します。後続視点へ既観測領域を再投影し、以前に観測した空間を塞ぐ矛盾した形状を除外します。初期メッシュの単純な描画を最終教師にせず、補完画像と推定深度をGSへ渡します。GSの初期メッシュへの位置拘束は0です。
+既定は **`--mode mesh` / `mesh_teacher_v8`** です。正面画像から推定した配置を使って床・天井・壁・家具を立体部品として組み立て、その形状を全視点で共有します。参照深度はメッシュとの交差から直接取得し、参照画像から再推定しません。GSの中心・回転・スケールを固定し、不透明度・SH色を学習します。[変更箇所・検証・制約](docs/mesh-teacher-v8.md)を参照してください。
+
+正面画像の単眼深度は最初の家具配置にだけ使用します。見えていない物体や細部を正確に復元する方式ではなく、家具は手続き的な近似形状です。外観は手続き的な材質と固定照明で、写真品質やUnityの動的照明への対応は未実装です。
+
+旧 `--mode expand` は比較用に保持します。以下のv4〜v7の説明と深度修復・TSDFコマンドは旧方式のものです。
 
 v6では生成したRGB-Dをそのまま板状メッシュとして追加する最終処理を廃止し、視点間の支持を検査してTSDFで全体を融合します。低信頼の暫定面は融合・学習の重みを下げます。GS初期点は検査に通った最終メッシュの面からのみ採り、不合格メッシュでは学習を停止します。[メッシュの作り方・修正内容・比較](docs/mesh-v6.md)を参照してください。元画像の不整合を解決する方法や、穴のない物体メッシュを生成する方法ではありません。
 
 v7は穴の原因をメッシュ欠落とGSの不透明度不足に分け、製品用では全入力視点を融合します。境界画素の回復、元深度で支持される小穴の局所補修、既知の面の被覆損失、空間分布を保つ初期点・点数制限を導入しました。[穴の原因・修正と比較](docs/holes-v7.md)を参照してください。
 
-未観測内容は生成による仮説であり、実物の復元ではありません。単眼深度による歪み、継ぎ目、家具の重複や欠落は残ります。形状を持つRGB-Dパッチの蓄積であり、各家具を閉じた完全なメッシュとして復元するものではありません。v3の手続き的家具は `--mode mesh`、v2は `--mode room`、初期方式は `--mode legacy` で保持しています。
+旧expand方式の未観測内容は生成による仮説であり、実物の復元ではありません。単眼深度による歪み、継ぎ目、家具の重複や欠落が残ります。v3の部品メッシュを新しいmesh方式の基礎として使用し、v2は `--mode room`、初期方式は `--mode legacy` で保持しています。
 
 深度・境界の修正版v5では、逆深度の倍率とオフセットを外れ値に頑健に合わせ、物体境界をまたがない深度補正と狭い範囲の色調整を行います。重なり部分の三角形も利用して接続の隙間を減らします。詳細は [深度・境界修正](docs/depth-seams-v5.md) を参照してください。
 
@@ -19,9 +23,31 @@ Python 3.10〜3.12、CUDA toolkitとC++コンパイラが必要です。仮想�
 ```bash
 cd '/home/dpc7/world GS'
 bash setup.sh
-./run.sh generate --prompt 'A cozy living room with a sofa, bookshelves and a wooden table, wide angle interior photograph' --output runs/livingroom_expand_new --mode expand --size 384 --views 12 --seed 42
-./run.sh train runs/livingroom_expand_new --steps 2000 --max-points 60000
+./run.sh generate --prompt 'A cozy living room with a sofa, bookshelves and a wooden table, wide angle interior photograph' --output runs/livingroom_mesh_new --size 384 --views 12 --seed 42
+./run.sh train runs/livingroom_mesh_new --steps 2000 --max-points 120000
 ```
+
+`--views` は水平方向の分割数です。各方向に水平・上向き・下向きのカメラを配置し、家具周囲の視点を追加します。約20%を評価用に除外するため、画像の総数は指定値より多くなります。
+
+配置を手動修正する場合は、保存済み `layout.json` の `shapes` を編集して、別の空ディレクトリへ生成します。この場合、深度推定・物体検出を再実行しません。画像サイズを変える場合は、色抽出用の検出座標も拡縮します。
+
+```bash
+./run.sh generate --prompt 'A cozy living room' --output runs/livingroom_layout_new --size 384 --views 12 --front-image runs/livingroom_mesh_new/front.png --layout-file runs/livingroom_mesh_new/layout.json
+```
+
+## 出力（既定のmesh方式）
+
+- `scene_mesh.glb`, `proxy_scene.obj`, `meshes/*.obj`: 全体と部屋・家具ごとの基準メッシュ。
+- `layout.json`: 部屋寸法、家具配置、立体部品の一覧。
+- `view_*.png`, `view_depth_*.npy`, `view_normals_*.npy`, `view_faces_*.npy`: 同じメッシュから描画したRGB、カメラz深度、世界座標法線、三角形ID。
+- `scene.json`: カメラ姿勢・内部パラメータと形状の識別情報。
+- `points.npz`, `mesh_geometry.npz`, `structure_quality.json`: 面上の初期点、基準形状、平面性と点の付着検査。
+- `references.jpg`, `heldout_references.jpg`: 学習用・評価用参照画像の一覧。
+- 学習後の `scene_unity.ply`: Unityへ読み込むbinary little-endian Gaussian PLY。
+- `gaussians.npz`, `gaussian_surface.npz`, `training.json`: 学習結果、各ガウスと基準三角形の対応、形状固定の確認。
+- `heldout_preview.png`, `evaluation.json`: 同じメッシュの未学習視点での比較。実物との精度評価ではありません。
+
+## 旧expand方式の操作
 
 既存のexpandモードの画像を再利用して深度と境界だけを修正する場合：
 
@@ -75,8 +101,8 @@ expandモードはRGBと推定深度を使用し、深度損失係数を0.1か�
 
 ```bash
 ~/.venvs/world-gs/bin/python -m unittest discover -s tests -v
-./run.sh generate --prompt test --output runs/expand_smoke_new --demo --size 64 --views 12
-./run.sh train runs/expand_smoke_new --steps 220 --max-points 3000
+./run.sh generate --prompt test --output runs/mesh_smoke_new --demo --size 64 --views 8
+./run.sh train runs/mesh_smoke_new --steps 220 --max-points 10000
 ```
 
-`--demo` は合成画像による処理検証用です。新方式は [全周補完 v4](docs/expansion-v4.md)、旧方式は [mesh v3検証](docs/mesh-v3.md)、先行研究は [研究整理](docs/research.md) を参照してください。生成データ・モデル・論文PDFは通常Gitに含めません。
+`--demo` は合成画像による処理検証用です。現方式は [mesh teacher v8](docs/mesh-teacher-v8.md)、過去の方式は [全周補完 v4](docs/expansion-v4.md) と [mesh v3検証](docs/mesh-v3.md)、先行研究は [研究整理](docs/research.md) を参照してください。生成データ・モデル・論文PDFは通常Gitに含めません。

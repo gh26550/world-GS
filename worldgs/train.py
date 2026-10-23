@@ -6,6 +6,9 @@ from PIL import Image
 
 def train(path, steps=1000, max_points=100000):
     meta_file = Path(path)/'scene.json'
+    if json.loads(meta_file.read_text()).get('mode') == 'mesh_teacher_v8':
+        from .train_teacher import train_teacher
+        return train_teacher(path, steps, max_points)
     if json.loads(meta_file.read_text()).get('mode') in ('mesh_components_v3', 'progressive_rgbd_v4', 'progressive_rgbd_v5', 'global_tsdf_v6', 'global_tsdf_v7'):
         from .train_mesh import train_mesh
         return train_mesh(path, steps, max_points)

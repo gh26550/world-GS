@@ -66,7 +66,8 @@ def build_components(layout, image):
         group = shape['name']
         label = shape.get('label', '')
         if 'sofa' in label or 'couch' in label:
-            x0, y0, x1, y1 = np.clip(shape['detection']['box'], 0, len(rgb)-1).astype(int)
+            box_pixels = shape.get('detection', {}).get('box', [0, 0, len(rgb)-1, len(rgb)-1])
+            x0, y0, x1, y1 = np.clip(box_pixels, 0, len(rgb)-1).astype(int)
             patch = rgb[y0:y1+1, x0:x1+1]
             pixels = patch.reshape(-1, 3).astype(float)
             pixels = pixels[(pixels.mean(1) > 25) & (pixels.mean(1) < 180)]
@@ -198,4 +199,31 @@ def camera_set(layout, views=12):
                         ([-2, 0, -2], [1, .5, 2]), ([2, 0, -2], [-1, .5, 2])]:
         if safe(np.array(eye)):
             result.append(('room', look_at(eye, target)))
+    return result
+
+
+def teacher_camera_set(layout, views=24):
+    """Full yaw coverage, with translated up/down views at different heights."""
+    from .room import pose_at
+    lo, hi = np.array(layout[0]['min']), np.array(layout[0]['max'])
+    radius = min(1.2, float(np.min((hi-lo)[[0, 2]]))*.18)
+    middle = (lo+hi)/2
+    def safe(eye):
+        if not ((eye > lo+.08) & (eye < hi-.08)).all():
+            return False
+        return not any(((eye > np.array(s['min'])-.1) & (eye < np.array(s['max'])+.1)).all() for s in layout[1:])
+    result = [('front', pose_at(0))] if safe(np.zeros(3)) else []
+    for i in range(views):
+        yaw = i*360/views
+        angle = np.deg2rad(yaw)
+        for pitch, height in [(0, 0), (55, -.15*(hi[1]-lo[1])), (-55, .15*(hi[1]-lo[1]))]:
+            eye = middle+np.array([radius*np.sin(angle), height, radius*np.cos(angle)])
+            if not safe(eye):
+                candidates = [middle+np.array([radius*f*np.sin(angle), height, radius*f*np.cos(angle)]) for f in [.65, .3, 0.]]
+                eye = next((p for p in candidates if safe(p)), None)
+            if eye is None:
+                raise ValueError(f'No safe camera for yaw={yaw}, pitch={pitch}; edit layout')
+            result.append((f'room_yaw_{yaw:g}_pitch_{pitch:g}', pose_at(yaw, pitch, eye)))
+    # Include views around each object to expose sides and accessible backs.
+    result.extend((name, pose) for name, pose in camera_set(layout, views) if name != 'room')
     return result

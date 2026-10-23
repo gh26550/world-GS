@@ -170,7 +170,9 @@ def generate_legacy(prompt, output, size=512, views=24, seed=0, demo=False):
     return metadata
 
 
-def generate(prompt, output, size=512, views=24, seed=0, demo=False, mode='expand', front_image=None, room_size=None):
+def generate(prompt, output, size=512, views=24, seed=0, demo=False, mode='mesh', front_image=None, room_size=None, layout_file=None):
+    if layout_file and mode != 'mesh':
+        raise ValueError('--layout-file requires --mode mesh')
     room_size = room_size or ((8., 3., 8.) if mode in ('mesh', 'expand') else (6., 3., 6.))
     if mode == 'expand':
         from .expansion import generate_expanded_scene
@@ -183,7 +185,7 @@ def generate(prompt, output, size=512, views=24, seed=0, demo=False, mode='expan
         return rebuild_mesh_scene(observations, folder, allow_observations=True)
     if mode == 'mesh':
         from .mesh_pipeline import generate_mesh_scene
-        return generate_mesh_scene(prompt, output, size, views, seed, demo, front_image, room_size)
+        return generate_mesh_scene(prompt, output, size, views, seed, demo, front_image, room_size, layout_file)
     if mode == 'legacy':
         if front_image is not None:
             raise ValueError('--front-image is not supported in legacy mode')
