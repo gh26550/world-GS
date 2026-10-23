@@ -14,3 +14,4 @@ python="$venv/bin/python"
 "$python" -m pip install 'torch==2.7.1' 'torchvision==0.22.1' --index-url https://download.pytorch.org/whl/cu128
 "$python" -m pip install -c constraints.txt -e '.[generation,training,meshing]'
 echo "Ready: $venv. Use ./run.sh generate ... and ./run.sh train ..."
+echo 'Default learned generation also needs SAM3, SAM 3D Objects and Blender backends; see docs/learned-v10.md.'

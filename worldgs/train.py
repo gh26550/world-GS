@@ -6,11 +6,25 @@ from PIL import Image
 
 def train(path, steps=1000, max_points=100000):
     meta_file = Path(path)/'scene.json'
-    if json.loads(meta_file.read_text()).get('mode') == 'prompt_mesh_radiance_v9':
+    if json.loads(meta_file.read_text()).get('mode') in ('prompt_mesh_radiance_v9','learned_mesh_v10'):
         from .train_teacher import validate_teacher
-        validate_teacher(path)
         from .train_mesh import train_mesh
-        return train_mesh(path, steps, max_points)
+        learned=json.loads(meta_file.read_text()).get('mode')=='learned_mesh_v10'
+        if learned and max_points<2:
+            raise ValueError('At least two initial Gaussians required')
+        status=Path(path)/'status.json'
+        if learned:
+            status.write_text(json.dumps(dict(stage='training',success=None,steps=steps)))
+        try:
+            validate_teacher(path)
+            result=train_mesh(path,steps,max_points)
+        except Exception as error:
+            if learned:
+                status.write_text(json.dumps(dict(stage='training_failed',success=False,error=str(error))))
+            raise
+        if learned:
+            status.write_text(json.dumps(dict(stage='trained',success=True,steps=steps)))
+        return result
     if json.loads(meta_file.read_text()).get('mode') == 'mesh_teacher_v8':
         from .train_teacher import train_teacher
         return train_teacher(path, steps, max_points)

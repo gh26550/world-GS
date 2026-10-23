@@ -15,3 +15,11 @@
 比較条件: 独立した各視点生成／点群のみの参照／メッシュ参照／メッシュ＋深度条件。共通プロンプト・seed・画角・視点数を固定し、生成時間、最大VRAM、重複領域の深度不一致、周回継ぎ目、物体重複、未使用の並進視点における破綻を測定します。正解画像のない生成シーンでPSNRだけを品質指標にしません。
 
 実装資料: [gsplat rasterization](https://docs.gsplat.studio/main/apis/rasterization.html)、[Diffusers inpainting](https://huggingface.co/docs/diffusers/api/pipelines/stable_diffusion/inpaint)。この実装は既存研究の公式再現ではなく、上記仮説の検証基盤です。
+
+## v10で使用するモデルと位置付け
+
+- [Qwen2.5-3B-Instruct](https://huggingface.co/Qwen/Qwen2.5-3B-Instruct)：プロンプトを要求台帳とシーングラフへ変換するローカル計画器。
+- [SAM3](https://github.com/facebookresearch/sam3)：物体画像の対象をマスクで抽出する。
+- [SAM 3D Objects](https://github.com/facebookresearch/sam-3d-objects)：画像と物体マスクから3D形状・外観を生成する。v10では正面の検出結果に限定せず、要求物体ごとに画像を生成して接続する。
+
+これらは本開発で新しく提案したモデルではない。v10は、意味的な要求管理、生成メッシュの配置、同じ幾何からの物理的な多視点参照、GSの構造維持をつなぐ検証実装である。今回の内部整合や欠落率だけで写実性・要求適合・研究上の新規性を保証しない。

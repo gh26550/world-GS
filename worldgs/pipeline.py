@@ -170,7 +170,14 @@ def generate_legacy(prompt, output, size=512, views=24, seed=0, demo=False):
     return metadata
 
 
-def generate(prompt, output, size=512, views=24, seed=0, demo=False, mode='mesh', front_image=None, room_size=None, layout_file=None):
+def generate(prompt, output, size=512, views=24, seed=0, demo=False, mode='learned', front_image=None, room_size=None, layout_file=None, resume=False, planner_model=None):
+    if mode=='learned':
+        if demo or layout_file or front_image:
+            raise ValueError('learned mode uses prompt-only generation; demo/layout/front-image overrides are not supported')
+        from .learned_scene import generate_learned_scene
+        return generate_learned_scene(prompt,output,size,views,seed,room_size,resume,planner_model)
+    if resume or planner_model:
+        raise ValueError('--resume/--planner-model require --mode learned')
     if layout_file and mode != 'mesh':
         raise ValueError('--layout-file requires --mode mesh')
     room_size = room_size or ((8., 3., 8.) if mode in ('scene', 'mesh', 'expand') else (6., 3., 6.))

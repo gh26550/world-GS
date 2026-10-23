@@ -1,5 +1,6 @@
 """Free 3D Gaussian fitting from actual multi-position mesh render references."""
 import json
+import re
 from pathlib import Path
 from shutil import copyfile
 import numpy as np
@@ -27,9 +28,9 @@ def foreground_coverage_loss(alpha, confidence, mask):
 def train_mesh(path, steps, max_points):
     path = Path(path)
     meta = json.loads((path/'scene.json').read_text())
-    prompt_mesh = meta.get('mode') == 'prompt_mesh_radiance_v9'
-    expanded = meta.get('mode') in ('progressive_rgbd_v4', 'progressive_rgbd_v5', 'global_tsdf_v6', 'global_tsdf_v7', 'prompt_mesh_radiance_v9')
-    coverage_mode = meta.get('mode') in ('global_tsdf_v7', 'prompt_mesh_radiance_v9')
+    prompt_mesh = meta.get('mode') in ('prompt_mesh_radiance_v9','learned_mesh_v10')
+    expanded = prompt_mesh or meta.get('mode') in ('progressive_rgbd_v4', 'progressive_rgbd_v5', 'global_tsdf_v6', 'global_tsdf_v7')
+    coverage_mode = prompt_mesh or meta.get('mode')=='global_tsdf_v7'
     if meta.get('mode') in ('global_tsdf_v6', 'global_tsdf_v7'):
         quality = json.loads((path/'mesh_quality.json').read_text())
         if not quality.get('passed') or quality.get('seed_to_assigned_surface_max', 1.) > 1e-4:
@@ -47,15 +48,26 @@ def train_mesh(path, steps, max_points):
     def cpu(x):
         return x.detach().cpu().numpy()
     source = np.load(path/'points.npz')
+    matte_components=[]
+    if meta.get('mode')=='learned_mesh_v10':
+        room=json.loads((path/'render_job.json').read_text())['plan']['room']
+        if re.search(r'plaster|paint|stucco',room['walls'],re.I):
+            matte_components.extend([0,1,4,5])
+        if re.search(r'plaster|paint|stucco',room['ceiling'],re.I):
+            matte_components.append(2)
     from .coverage_sampling import stratified_seed_ids, coverage_drop_mask
     ids = stratified_seed_ids(source['xyz'], max_points, meta['seed']) if coverage_mode else np.random.default_rng(meta['seed']).permutation(len(source['xyz']))[:max_points]
     initial = source['xyz'][ids]
     n = len(initial)
     distance = cKDTree(initial).query(initial, k=2)[0][:, 1]
     radius = np.clip(distance*.8, .008, .08)
+    if meta.get('mode')=='learned_mesh_v10':
+        neighbours=cKDTree(initial).query(initial,k=min(7,n))[0][:,1:]
+        radius=np.clip(neighbours.mean(1)*.85,.008,.12)
+    normal_radius=np.minimum(radius*.25,.01) if meta.get('mode')=='learned_mesh_v10' else radius*.5
     parameters = torch.nn.ParameterDict({
         'means': torch.nn.Parameter(t(initial)),
-        'scales': torch.nn.Parameter(t(np.log(np.column_stack([radius, radius, radius*.5])))),
+        'scales': torch.nn.Parameter(t(np.log(np.column_stack([radius, radius, normal_radius])))),
         'quats': torch.nn.Parameter(t(normal_quaternions(source['normals'][ids]))),
         'opacities': torch.nn.Parameter(t(np.full(n, -1.4))),
         'sh0': torch.nn.Parameter(t((source['rgb'][ids]/255-.5)/.28209479177387814)[:, None]),
@@ -77,11 +89,15 @@ def train_mesh(path, steps, max_points):
     poses = [torch.linalg.inv(t(f['transform_matrix']))[None] for f in frames]
     tree = cKDTree(source['xyz'])
     anchors, normals = None, None
+    matte_mask,anchor_colors=None,None
     last_anchor_step = -100
     degree = 0
     def render(view):
+        shN=parameters['shN']
+        if matte_mask is not None:
+            shN=shN*(~matte_mask)[:,None,None]
         return rasterization(means=parameters['means'], quats=parameters['quats'], scales=parameters['scales'].exp(),
-            opacities=parameters['opacities'].sigmoid(), colors=torch.cat([parameters['sh0'], parameters['shN']], 1),
+            opacities=parameters['opacities'].sigmoid(), colors=torch.cat([parameters['sh0'], shN], 1),
             sh_degree=degree, viewmats=view, Ks=K, width=size, height=size, packed=False, absgrad=True, render_mode='RGB+ED')
     log = []
     for step in range(steps):
@@ -90,6 +106,9 @@ def train_mesh(path, steps, max_points):
         if (not expanded or prompt_mesh) and (anchors is None or len(anchors) != count or step-last_anchor_step >= 100):
             nearest = tree.query(cpu(parameters['means']), workers=2)[1]
             anchors, normals = t(source['xyz'][nearest]), t(source['normals'][nearest])
+            if matte_components:
+                matte_mask=t(np.isin(source['component_ids'][nearest],matte_components)).bool()
+                anchor_colors=t((source['rgb'][nearest]/255-.5)/.28209479177387814)
             last_anchor_step = step
         i = step % len(frames)
         rendered, alpha, info = render(poses[i])
@@ -122,6 +141,10 @@ def train_mesh(path, steps, max_points):
         depth_weight = .2 if prompt_mesh else .1*(1-.8*step/max(steps-1, 1)) if expanded else .1
         coverage_loss = foreground_coverage_loss(alpha[0, ..., 0], confidences[i], valid) if coverage_mode else rgb_loss*0
         loss = rgb_loss+depth_weight*depth_loss+(.3 if prompt_mesh else 0. if expanded else .1)*prior+.05*coverage_loss
+        if matte_mask is not None and matte_mask.any():
+            # Rough plaster is approximately view-independent. Do not invent
+            # coloured high-order lobes to fit low-texture room surfaces.
+            loss=loss+.03*(parameters['sh0'][matte_mask,0]-anchor_colors[matte_mask]).abs().mean()
         if not torch.isfinite(loss):
             raise RuntimeError('Non-finite mesh GS training loss')
         strategy.step_pre_backward(parameters, optimizers, state, step, info)
@@ -149,6 +172,11 @@ def train_mesh(path, steps, max_points):
             log.append(record)
             print(json.dumps(record), flush=True)
     degree = min(3, (steps-1)//300)
+    if matte_components:
+        nearest=tree.query(cpu(parameters['means']),workers=2)[1]
+        matte_mask=t(np.isin(source['component_ids'][nearest],matte_components)).bool()
+        with torch.no_grad():
+            parameters['shN'][matte_mask]=0
     means, scales = cpu(parameters['means']), cpu(parameters['scales'])
     q = cpu(torch.nn.functional.normalize(parameters['quats'], dim=-1))
     values = np.concatenate([means, np.zeros_like(means), cpu(parameters['sh0'])[:, 0],
@@ -183,11 +211,12 @@ def train_mesh(path, steps, max_points):
         canvas.paste(prediction.resize((256, 256)), (x, y+256))
     canvas.save(path/'heldout_preview.png')
     nearest = tree.query(means, workers=2)[0]
-    training = {'trainer': 'prompt_mesh_radiance_v9' if prompt_mesh else ('coverage_3dgs_v7' if coverage_mode else 'fused_tsdf_3dgs_v6' if meta.get('mode') == 'global_tsdf_v6' else 'generated_rgbd_3dgs_v5' if meta.get('mode') == 'progressive_rgbd_v5' else 'generated_rgbd_3dgs_v4') if expanded else 'free_3dgs_mesh_references_v3', 'steps': steps, 'initial_points': n, 'final_points': len(means),
+    training = {'trainer': meta['mode'] if prompt_mesh else ('coverage_3dgs_v7' if coverage_mode else 'fused_tsdf_3dgs_v6' if meta.get('mode') == 'global_tsdf_v6' else 'generated_rgbd_3dgs_v5' if meta.get('mode') == 'progressive_rgbd_v5' else 'generated_rgbd_3dgs_v4') if expanded else 'free_3dgs_mesh_references_v3', 'steps': steps, 'initial_points': n, 'final_points': len(means),
         'coverage_loss_weight': .05 if coverage_mode else 0., 'spatially_stratified_sampling': coverage_mode, 'spatial_budget_pruning': coverage_mode,
         'mesh_prior_weight': .3 if prompt_mesh else 0. if expanded else .1, 'depth_weight_schedule': [.2, .2] if prompt_mesh else [.1, .02] if expanded else [.1, .1],
         'trainable': list(parameters.keys()), 'hard_projection': False, 'densification': True, 'sh_degree': degree,
+        'matte_room_components':matte_components,'matte_room_sh_degree':0 if matte_components else None,
         'nearest_source_distance_median': float(np.median(nearest)), 'nearest_source_distance_p95': float(np.quantile(nearest, .95)), 'log': log}
     (path/'training.json').write_text(json.dumps(training, indent=2), encoding='utf-8')
-    (path/'evaluation.json').write_text(json.dumps({'reference': 'heldout shared photographic surface renders on the same prompt mesh; not independent ground truth' if prompt_mesh else 'heldout updated generated RGBD geometry renders; not independent ground truth' if expanded else 'heldout triangle mesh renders; not real-world ground truth', 'frames': evaluation}, indent=2), encoding='utf-8')
+    (path/'evaluation.json').write_text(json.dumps({'reference': 'heldout physically rendered UV-mesh views; not independent real-world ground truth' if meta.get('mode')=='learned_mesh_v10' else 'heldout shared photographic surface renders on the same prompt mesh; not independent ground truth' if prompt_mesh else 'heldout updated generated RGBD geometry renders; not independent ground truth' if expanded else 'heldout triangle mesh renders; not real-world ground truth', 'frames': evaluation}, indent=2), encoding='utf-8')
     print(f'Saved {len(means)} freely optimized Gaussians; SH degree {degree}', flush=True)

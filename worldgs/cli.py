@@ -4,6 +4,11 @@ import argparse
 def main():
     parser = argparse.ArgumentParser(description='World-GS experimental scene pipeline')
     sub = parser.add_subparsers(dest='command', required=True)
+    plan = sub.add_parser('plan',help='Create and validate an LLM scene graph without generating images or meshes')
+    plan.add_argument('--prompt',required=True)
+    plan.add_argument('--output',required=True)
+    plan.add_argument('--room-size',nargs=3,type=float)
+    plan.add_argument('--model',default=None)
     generate = sub.add_parser('generate')
     generate.add_argument('--prompt', required=True)
     generate.add_argument('--output', required=True)
@@ -11,7 +16,9 @@ def main():
     generate.add_argument('--views', type=int, default=24)
     generate.add_argument('--seed', type=int, default=0)
     generate.add_argument('--demo', action='store_true', help='Synthetic integration fixture; does not generate images from the prompt')
-    generate.add_argument('--mode', choices=['scene', 'expand', 'mesh', 'room', 'legacy'], default='mesh', help='scene is an experimental prompt-inventory/photographic-surface path')
+    generate.add_argument('--mode', choices=['learned', 'scene', 'expand', 'mesh', 'room', 'legacy'], default='learned', help='learned uses LLM planning and SAM3D assets; scene is the limited v9 experiment')
+    generate.add_argument('--resume',action='store_true',help='Resume an identical learned-mode request from completed stages')
+    generate.add_argument('--planner-model',help='Local/Hugging Face causal model for learned-mode planning')
     generate.add_argument('--layout-file', help='Editable saved layout.json; mesh mode only, bypasses depth estimation and detection')
     generate.add_argument('--front-image', help='Reuse an existing front image for a controlled comparison')
     generate.add_argument('--room-size', nargs=3, type=float, default=None, metavar=('WIDTH', 'HEIGHT', 'LENGTH'))
@@ -34,7 +41,17 @@ def main():
     audit.add_argument('--output', required=True)
     args = vars(parser.parse_args())
     command = args.pop('command')
-    if command == 'generate':
+    if command=='plan':
+        from pathlib import Path
+        from .semantic_plan import plan_with_llm
+        folder=Path(args.pop('output'))
+        if folder.exists() and any(folder.iterdir()):
+            raise FileExistsError('Use an empty output directory for planning')
+        model=args.pop('model')
+        if model:
+            args['model_id']=model
+        plan_with_llm(output=folder,**args)
+    elif command == 'generate':
         from .pipeline import generate
         generate(**args)
     elif command == 'refine-depth':
