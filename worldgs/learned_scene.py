@@ -11,7 +11,7 @@ from datetime import datetime,timezone
 import numpy as np
 from PIL import Image
 import trimesh
-from .semantic_plan import plan_with_llm,validate_plan,repair_layout
+from .semantic_plan import plan_with_llm,validate_plan,repair_layout,resolve_supports
 
 
 def backend_paths():
@@ -74,6 +74,16 @@ def learned_cameras(layout,views):
     def safe(eye):
         return ((eye>lo+.08)&(eye<hi-.08)).all() and not any(
             ((eye>np.asarray(s['min'])-.08)&(eye<np.asarray(s['max'])+.08)).all() for s in layout[1:])
+    # Close translated views keep small accessories resolved in the references.
+    for shape in layout[1:]:
+        a,b=np.asarray(shape['min']),np.asarray(shape['max'])
+        target=(a+b)/2
+        radius=max(.55,float(np.linalg.norm(b-a))*.9)
+        for angle in range(0,360,60):
+            radians=np.deg2rad(angle)
+            eye=target+radius*np.array([np.sin(radians),-.45,np.cos(radians)])
+            if safe(eye):
+                cameras.append((f'object_detail_{shape["name"]}_{angle}',look_at(eye,target)))
     # Diagonally grazing room edges were missing from the colour-initialized
     # seed cloud. Explicit corner views and vertical translated views observe
     # those surfaces directly instead of hallucinating/filling their geometry.
@@ -112,8 +122,10 @@ def generate_images(plan,folder,seed):
                 filename=directory/f'candidate_{candidate:02d}.png'
                 if filename.exists():
                     continue
-                prompt=('Wide shot, a small single '+obj['label']+' centered in a large empty white studio, entire object and all legs fully in frame, lots of whitespace, catalog product photography. '+obj['description']+
-                        ', front three quarter view, realistic materials, detailed texture')
+                def limited(text,count):
+                    return pipe.tokenizer.decode(pipe.tokenizer.encode(text,add_special_tokens=False)[:count])
+                prompt=(limited(obj['description'],35)+'. '+limited(plan['style'],15)+
+                        '. Full object in frame, white background, three quarter product photo')
                 image=pipe(prompt,negative_prompt='close-up, cropped, cut off, multiple objects, room, interior, walls, people, text, watermark, collage, duplicate, floor platform',
                     width=768 if candidate>=2 else 512,height=512,num_inference_steps=35,guidance_scale=7.,
                     generator=torch.Generator(models.device).manual_seed(seed+index*19+candidate)).images[0]
@@ -179,10 +191,20 @@ def assemble(plan,folder):
         normalized.append(mesh)
     plan=repair_layout(plan)
     validate_plan(plan)
-    for obj,mesh in zip(plan['objects'],normalized):
+    normalized={o['id']:m for o,m in zip(plan['objects'],normalized)}
+    placed={}
+    contacts=[]
+    for obj in resolve_supports(plan):
+        mesh=normalized[obj['id']]
         mesh.apply_transform(trimesh.transformations.rotation_matrix(np.deg2rad(obj['yaw']),[0,1,0]))
         x,z=obj['position']
-        mesh.apply_translation([x,h/2-mesh.bounds[1,1],z])
+        mesh.apply_translation([x,obj['bottom_y']-mesh.bounds[1,1],z])
+        parent=obj.get('support','floor')
+        if parent!='floor':
+            bottom=contact_height(placed[parent],mesh)
+            mesh.apply_translation([0,bottom-mesh.bounds[1,1],0])
+            contacts.append(dict(object=obj['id'],support=parent,bottom_y=bottom))
+        placed[obj['id']]=mesh
         mesh.export(folder/'assets'/obj['id']/'placed.glb')
         actual=mesh.bounds.tolist()
         components.append(dict(name=obj['id'],group=obj['id'],material='generated_asset',faces=len(mesh.faces),bounds=actual))
@@ -208,8 +230,23 @@ def assemble(plan,folder):
     np.savez_compressed(folder/'mesh_geometry.npz',vertices=combined.vertices.astype(np.float32),faces=combined.faces.astype(np.int32),owners=owners)
     (folder/'layout.json').write_text(json.dumps(dict(shapes=layout,components=components),indent=2))
     (folder/'assembly.json').write_text(json.dumps(dict(objects=plan['objects'],source='SAM3D generated UV-textured meshes',
-        placeholder_fallback=False),indent=2))
+        placeholder_fallback=False,support_contacts=contacts),indent=2))
     return combined,components,owners,layout
+
+
+def contact_height(parent,child):
+    """Check actual support triangles at a 3x3 footprint grid, not just its box."""
+    from trimesh.ray.ray_pyembree import RayMeshIntersector
+    lo,hi=child.bounds
+    origins=np.array([[x,parent.bounds[0,1]-.1,z]
+        for x in np.linspace(lo[0],hi[0],3) for z in np.linspace(lo[2],hi[2],3)])
+    directions=np.tile([0.,1.,0.],(len(origins),1))
+    hits,ids,_=RayMeshIntersector(parent).intersects_location(origins,directions,multiple_hits=False)
+    if len(np.unique(ids))!=len(origins):
+        raise ValueError('Accessory footprint is not fully supported by the actual mesh')
+    if np.ptp(hits[:,1])>.035:
+        raise ValueError('Support surface is not sufficiently flat for this accessory')
+    return float(hits[:,1].min())
 
 
 def generate_learned_scene(prompt,output,size,views,seed,room_size=None,resume=False,planner_model=None):

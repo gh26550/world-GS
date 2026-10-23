@@ -51,19 +51,23 @@ def train_mesh(path, steps, max_points):
     matte_components=[]
     if meta.get('mode')=='learned_mesh_v10':
         room=json.loads((path/'render_job.json').read_text())['plan']['room']
-        if re.search(r'plaster|paint|stucco',room['walls'],re.I):
+        from .physical_render import matte_room_finish
+        if matte_room_finish(room['walls']):
             matte_components.extend([0,1,4,5])
-        if re.search(r'plaster|paint|stucco',room['ceiling'],re.I):
+        if matte_room_finish(room['ceiling']):
             matte_components.append(2)
-    from .coverage_sampling import stratified_seed_ids, coverage_drop_mask
+    from .coverage_sampling import stratified_seed_ids, coverage_drop_mask,component_stratified_seed_ids
     ids = stratified_seed_ids(source['xyz'], max_points, meta['seed']) if coverage_mode else np.random.default_rng(meta['seed']).permutation(len(source['xyz']))[:max_points]
+    if meta.get('mode')=='learned_mesh_v10':
+        # Preserve small objects when reducing the area-weighted cloud.
+        ids=component_stratified_seed_ids(source['xyz'],source['component_ids'],max_points,meta['seed'])
     initial = source['xyz'][ids]
     n = len(initial)
     distance = cKDTree(initial).query(initial, k=2)[0][:, 1]
     radius = np.clip(distance*.8, .008, .08)
     if meta.get('mode')=='learned_mesh_v10':
         neighbours=cKDTree(initial).query(initial,k=min(7,n))[0][:,1:]
-        radius=np.clip(neighbours.mean(1)*.85,.008,.12)
+        radius=np.clip(neighbours.mean(1)*.85,.002,.12)
     normal_radius=np.minimum(radius*.25,.01) if meta.get('mode')=='learned_mesh_v10' else radius*.5
     parameters = torch.nn.ParameterDict({
         'means': torch.nn.Parameter(t(initial)),

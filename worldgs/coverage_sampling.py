@@ -2,6 +2,20 @@
 import numpy as np
 
 
+def component_stratified_seed_ids(xyz,components,limit,seed=0):
+    """Reserve per-object detail, then resample the remaining spatial budget."""
+    rng=np.random.default_rng(seed)
+    groups=np.unique(components)
+    reserved=[]
+    for group in groups:
+        candidates=np.flatnonzero(components==group)
+        reserved.extend(rng.choice(candidates,min(len(candidates),limit//(2*len(groups))),replace=False))
+    reserved=np.asarray(reserved,dtype=int)
+    available=np.flatnonzero(~np.isin(np.arange(len(xyz)),reserved))
+    remainder=available[stratified_seed_ids(xyz[available],limit-len(reserved),seed)]
+    return np.r_[reserved,remainder]
+
+
 def stratified_seed_ids(xyz, limit, seed=0):
     rng = np.random.default_rng(seed)
     order = rng.permutation(len(xyz))

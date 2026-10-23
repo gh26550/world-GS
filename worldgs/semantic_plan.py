@@ -9,8 +9,8 @@ MODEL = 'Qwen/Qwen2.5-3B-Instruct'
 SYSTEM = '''You plan a single rectangular indoor 3D scene. Return ONLY JSON.
 Do not drop any requested object just because it may be invisible in the front view.
 Use this schema (all keys required):
-{"style":"English appearance description", "room":{"size":[8,3,8],"floor":"wood","walls":"plaster","ceiling":"plaster"},
- "objects":[{"id":"sofa_00","label":"sofa","description":"English visual description of exactly ONE object, materials and colors", "size":{"width":2.2,"height":1.0,"depth":0.9},"size_locked":false,"x":0,"z":2.8,"yaw":0}],
+{"style":"warm cream, natural oak, muted earth colors", "room":{"size":[8,3,8],"floor":"wood","walls":"plaster","ceiling":"plaster"},
+ "objects":[{"id":"sofa_00","label":"sofa","description":"English visual description of exactly ONE object, materials and colors", "support":"floor", "size":{"width":2.2,"height":1.0,"depth":0.9},"size_locked":false,"x":0,"z":2.8,"yaw":0}],
  "requirements":[{"id":"r0","text":"one sofa","object_ids":["sofa_00"],"kind":"object"}],
  "relations":[{"subject":"table_00","relation":"in_front_of","object":"sofa_00","frame":"object"}],
  "lighting":{"description":"warm diffuse ceiling light","power":1000,"color":[1,0.9,0.8]},
@@ -20,11 +20,13 @@ dimensions=[width,height,depth]. x and z are separate NUMBER fields, center on t
 The front camera at (0,0,0) looks toward +z. Object fronts normally face -z when yaw=0.
 For in_front_of/behind use the reference object's heading (frame="object"); yaw=0 faces -z. frame="world" instead uses -z as front. left_of defaults to smaller world x. Other allowed relations: next_to, against_wall (object="room").
 Put objects inside room bounds without bounding-box intersections. Do not place objects around the camera origin.
-Only one rectangular room and floor-supported standalone objects are implemented.
-Openings, multiple rooms, ceiling-hung objects or on-top support relations must be listed in unsupported rather than faked.
+Each object also has support="floor" or another object's ID. Use support for books, vases and other tabletop accessories. Their x,z are world coordinates. Supported objects must fit entirely over their support. No cyclic support chains.
+A closed book lying flat has height about 0.03m, width 0.2m and depth 0.28m; do not confuse height with the cover length. All size fields are meters.
+For a furnished/lived-in/decorated room, infer a modest coherent set of small accessories (books, vase, bowl), record them as assumptions and give each requirement provenance. Respect explicitly requested counts. Do not add furniture when the prompt explicitly forbids it.
+Only one rectangular room is implemented. Openings, multiple rooms, ceiling-hung objects must be listed in unsupported rather than faked.
 Use requirements to enumerate ALL requested object counts, appearance, room, lighting and relationships.
 Use NAMED size fields width,height,depth. A tall bookshelf has height about 2.0 and depth about 0.35. Set size_locked=true ONLY if the user explicitly demands numerical dimensions.
-Do not add unrequested furniture. Record inferred counts, positions and dimensions in assumptions.
+Do not add unrequested large furniture. Share the room style, palette and material family across all object descriptions. Record inferred counts, positions and dimensions in assumptions.
 Do not generate executable code. All descriptions must be in English even for Japanese input.'''
 
 
@@ -38,13 +40,43 @@ def extract_json(raw):
     return value
 
 
+def resolve_supports(plan):
+    """Topologically resolve floor/contact heights, rejecting dangling/cyclic supports."""
+    objects={o['id']:o for o in plan['objects']}
+    ordered=[]
+    active=set()
+    done=set()
+    def visit(obj):
+        name=obj['id']
+        if name in active:
+            raise ValueError('Cyclic support: '+name)
+        if name in done:
+            return
+        active.add(name)
+        parent=obj.get('support','floor')
+        if parent=='floor':
+            obj['bottom_y']=plan['room']['size'][1]/2
+        else:
+            if parent not in objects:
+                raise ValueError('Unknown support: '+str(parent))
+            visit(objects[parent])
+            base=objects[parent]
+            obj['bottom_y']=base['bottom_y']-base['dimensions'][1]
+        active.remove(name)
+        done.add(name)
+        ordered.append(obj)
+    for obj in plan['objects']:
+        visit(obj)
+    return ordered
+
+
 def object_bounds(obj, height):
     width, dy, depth = np.asarray(obj['dimensions'],float)
     x,z = np.asarray(obj['position'],float)
     a = np.deg2rad(float(obj['yaw']))
     extent = np.array([abs(np.cos(a))*width+abs(np.sin(a))*depth,dy,
                        abs(np.sin(a))*width+abs(np.cos(a))*depth])
-    center = np.array([x,height/2-dy/2,z])
+    center = np.array([x,obj.get('bottom_y',height/2)-dy/2,z])
     return center-extent/2,center+extent/2
 
 
@@ -65,6 +97,7 @@ def validate_plan(plan):
     objects = plan['objects']
     if not isinstance(objects,list) or not 1 <= len(objects) <= 24:
         raise ValueError('Scene needs 1–24 explicit object instances')
+    resolve_supports(plan)
     names, bounds = set(),{}
     for obj in objects:
         name = obj['id']
@@ -72,7 +105,8 @@ def validate_plan(plan):
             raise ValueError('Object IDs must be unique safe identifiers')
         names.add(name)
         dimensions,position = np.asarray(obj['dimensions'],float),np.asarray(obj['position'],float)
-        if dimensions.shape != (3,) or position.shape != (2,) or not np.isfinite(np.r_[dimensions,position,obj['yaw']]).all() or (dimensions < .05).any():
+        minimum=.005 if obj.get('support','floor')!='floor' else .05
+        if dimensions.shape != (3,) or position.shape != (2,) or not np.isfinite(np.r_[dimensions,position,obj['yaw']]).all() or (dimensions < minimum).any():
             raise ValueError(f'Invalid geometry for {name}: dimensions must be exactly 3 positive numbers and position exactly 2 numbers [x,z]; got {obj}')
         if any(not isinstance(obj.get(key),str) or not obj[key].strip() for key in ('label','description')):
             raise ValueError('Object description missing: '+name)
@@ -85,6 +119,13 @@ def validate_plan(plan):
             if (np.minimum(hi,b)-np.maximum(lo,a) > .02).all():
                 raise ValueError('Object collision: '+name+' / '+other)
         bounds[name] = lo,hi
+    for obj in objects:
+        parent=obj.get('support','floor')
+        if parent!='floor':
+            lo,hi=bounds[obj['id']]
+            a,b=bounds[parent]
+            if (lo[[0,2]]<a[[0,2]]+.01).any() or (hi[[0,2]]>b[[0,2]]-.01).any():
+                raise ValueError('Object footprint outside support: '+obj['id'])
     requirements = plan['requirements']
     referenced = set()
     if not requirements:
@@ -136,6 +177,9 @@ def repair_layout(plan):
     """Solve metric placement; never add/delete objects or alter their descriptions."""
     from scipy.optimize import least_squares
     objects=plan['objects']
+    if not isinstance(plan.get('style'),str):
+        raise ValueError('style must be a plain English STRING describing palette/materials, not an object or dictionary')
+    resolve_supports(plan)
     w,h,l=np.asarray(plan['room']['size'],float)
     proposed=np.array([o['position'] for o in objects],float)
     extents=[]
@@ -155,8 +199,17 @@ def repair_layout(plan):
             penetration=extents[i]/2+.25-np.abs(centers[i])
             values.append(50*max(0,float(penetration.min())))
             for j in range(i):
+                ai,bi=object_bounds(objects[i],h)
+                aj,bj=object_bounds(objects[j],h)
+                if min(bi[1],bj[1])-max(ai[1],aj[1])<=.02:
+                    continue
                 penetration=(extents[i]+extents[j])/2+.06-np.abs(centers[i]-centers[j])
                 values.append(50*max(0,float(penetration.min())))
+            parent=objects[i].get('support','floor')
+            if parent!='floor':
+                j=indices[parent]
+                excess=np.abs(centers[i]-centers[j])+extents[i]/2-extents[j]/2+.02
+                values.extend(50*np.maximum(excess,0))
         for rel in plan['relations']:
             i=indices[rel['subject']]
             kind=rel['relation']
@@ -220,6 +273,8 @@ def plan_with_llm(prompt, output, room_size=None, model_id=MODEL):
             try:
                 plan = extract_json(raw)
                 for obj in plan.get('objects',[]):
+                    if not isinstance(obj.get('support'),str):
+                        raise ValueError('Every planned object must explicitly declare support: floor or parent ID. On-table objects must name the table ID, never floor.')
                     if 'size' in obj:
                         obj['dimensions']=[obj['size'][key] for key in ('width','height','depth')]
                     if 'x' in obj and 'z' in obj:
@@ -228,7 +283,7 @@ def plan_with_llm(prompt, output, room_size=None, model_id=MODEL):
                     plan['room']['size']=list(room_size)
                 plan=repair_layout(plan)
                 validation = validate_plan(plan)
-                audit_raw = ask([dict(role='system',content='Audit scene JSON against the ORIGINAL user prompt. Return ONLY {"missing":[],"contradictions":[]}. Check requested object counts and all spatial, appearance and lighting requirements. Do not treat planner assumptions as user requests. Report actual omissions only.'),
+                audit_raw = ask([dict(role='system',content='Audit scene JSON against the ORIGINAL user prompt. Return ONLY {"missing":[],"contradictions":[]}. Check requested object counts and all spatial, appearance and lighting requirements. Objects requested ON a table or shelf MUST have support set to that object ID, not floor; next_to alone does not satisfy on. Do not treat planner assumptions as user requests. Report actual omissions only.'),
                                  dict(role='user',content=json.dumps(dict(original_prompt=prompt,scene=plan),ensure_ascii=False))],900)
                 audit = extract_json(audit_raw)
                 if any(not isinstance(audit.get(key),list) for key in ('missing','contradictions')):
@@ -239,6 +294,7 @@ def plan_with_llm(prompt, output, room_size=None, model_id=MODEL):
                 plan.update(prompt=prompt,planner=model_id,validation=validation,semantic_audit=audit,
                             semantic_completeness_guaranteed=False)
                 (output/'scene_plan.json').write_text(json.dumps(plan,indent=2,ensure_ascii=False),encoding='utf-8')
+                (output/'failure.json').unlink(missing_ok=True)
                 return plan
             except (ValueError,KeyError,TypeError) as error:
                 history.append(str(error))

@@ -1,6 +1,6 @@
 # World-GS
 
-プロンプトから要求を整理し、物体ごとの生成メッシュを組み立て、全周の参照画像から3D Gaussian Splattingを学習する研究用実装です。既定は **`--mode learned`（v10）** です。
+プロンプトから要求を整理し、物体ごとの生成メッシュを組み立て、全周の参照画像から3D Gaussian Splattingを学習する研究用実装です。既定は **`--mode learned`** です。[家具上の小物・接触検査・近距離多視点の拡張（v11）](docs/furnished-room-v11.md)を追加しました。
 
 ```text
 プロンプト → ローカルLLMのシーングラフ → 寸法・衝突・配置関係の検査
@@ -68,6 +68,7 @@ export WORLDGS_BLENDER="$HOME/software/blender-5.1.2-linux-x64/blender"
 | `view_*.png`, `view_*_depth.npy`, `view_*_normals.npy`, `view_*_faces.npy` | 学習用のRGB・カメラz深度・世界座標法線・三角形ID |
 | `heldout_*.png`, `scene.json` | 学習から除外したカメラの参照と全体設定 |
 | `references.jpg`, `heldout_references.jpg` | 参照画像一覧 |
+| `references.html`, `object_visibility.json` | 画像を開ける一覧、小物を含む各物体の可視視点・参照点数 |
 | `points.npz`, `mesh_geometry.npz`, `structure_quality.json` | 初期点と面の対応、形状・構造検査 |
 | `scene_unity.ply`, `scene.ply` | 学習後のbinary little-endian Gaussian PLY（62属性） |
 | `gaussians.npz`, `training.json`, `evaluation.json` | 学習結果、設定、未学習視点の評価 |
@@ -77,7 +78,7 @@ export WORLDGS_BLENDER="$HOME/software/blender-5.1.2-linux-x64/blender"
 
 ## 検証範囲と制約
 
-単一の矩形室内と床に支持された物体を対象にしています。複数部屋・開口・天井吊り・積み重ねなど、未実装の要求は計画器から未対応として報告し停止する設計です。自然言語の完全な理解を保証するものではなく、LLMの要求検査にも誤りは残り得ます。
+単一の矩形室内、床支持の家具、平坦な家具面に載る小物を対象にしています。複数部屋・開口・天井吊り・棚内部の任意位置などは未対応です。自然言語の完全な理解を保証するものではなく、LLMの要求検査にも誤りは残り得ます。
 
 物体の背面・細部・寸法は推定です。生成UVテクスチャには照明が混ざる場合があり、厳密な材質分離ではありません。全周参照は生成メッシュのUVテクスチャとPBR照明で作り、独立した視点ごとの画像補完は使用しません。GSのぼけや色むらは残り、Unityの動的ライトによる再照明は未対応です。
 

@@ -1,5 +1,6 @@
 """Attach physically rendered references and initial colours to the same mesh."""
 import hashlib
+import html
 import json
 from pathlib import Path
 import numpy as np
@@ -15,6 +16,7 @@ def save_references(folder,prompt,seed,size,mesh,components,owners,job):
     renderer=MeshRenderer(mesh,components,owners)
     visible=np.zeros(len(mesh.faces),bool)
     frames,heldout=[],[]
+    observations={c['name']:[] for c in components}
     for source in job['frames']:
         frame=source.copy()
         split=frame.pop('split')
@@ -29,9 +31,34 @@ def save_references(folder,prompt,seed,size,mesh,components,owners,job):
         if split=='view':
             frames.append(frame)
             visible[hit['faces'][valid]]=True
+            component_image=owners[hit['faces'][valid]]
+            for index,component in enumerate(components):
+                pixels=int((component_image==index).sum())
+                if pixels>=16:
+                    observations[component['name']].append(dict(frame=frame['file_path'],pixels=pixels))
         else:
             heldout.append(frame)
-    points=sample_teacher_surface(mesh,renderer,owners,visible,seed=seed)
+    coverage=dict(objects={c['name']:observations[c['name']] for c in components if c.get('material')=='generated_asset'},
+                  criterion='at least two training views with >=16 visible pixels per generated object')
+    coverage['passed']=all(len(v)>=2 for v in coverage['objects'].values())
+    (folder/'object_visibility.json').write_text(json.dumps(coverage,indent=2))
+    if not coverage['passed']:
+        raise ValueError('Some objects lack multiview supervision; inspect object_visibility.json')
+    cards=[]
+    for split,items in [('Training',frames),('Held-out',heldout)]:
+        cards.append('<h2>'+split+'</h2><div class="grid">')
+        for frame in items:
+            filename=html.escape(frame['file_path'],quote=True)
+            label=html.escape(frame['target'])
+            cards.append(f'<a href="{filename}"><img loading="lazy" src="{filename}"><span>{filename}: {label}</span></a>')
+        cards.append('</div>')
+    (folder/'references.html').write_text('<!doctype html><html lang="en"><meta charset="utf-8">'
+        '<title>World-GS references</title><style>body{font:15px sans-serif;background:#20242b;color:#eee;padding:24px}'
+        '.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px}'
+        'a{color:#eee;background:#343a44;padding:8px;text-decoration:none}img{width:100%}span{display:block;overflow-wrap:anywhere}</style>'
+        '<h1>360-degree mesh references</h1><p>Physical RGB references used for Gaussian training. Click an image to inspect it.</p>'
+        +''.join(cards)+'</html>',encoding='utf-8')
+    points=sample_teacher_surface(mesh,renderer,owners,visible,seed=seed,component_fraction=.35)
     scores=np.zeros(len(points['xyz']))
     for frame in frames:
         pose=np.asarray(frame['transform_matrix'])
@@ -58,6 +85,8 @@ def save_references(folder,prompt,seed,size,mesh,components,owners,job):
         scores[ids]=weight[better]
     keep=scores>0
     points={name:value[keep] for name,value in points.items()}
+    coverage['seed_counts']={c['name']:int((points['component_ids']==i).sum()) for i,c in enumerate(components)}
+    (folder/'object_visibility.json').write_text(json.dumps(coverage,indent=2))
     if len(points['xyz'])<1000:
         raise ValueError('Insufficient physically observed surface samples')
     np.savez_compressed(folder/'points.npz',**points)

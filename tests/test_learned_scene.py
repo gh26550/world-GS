@@ -8,8 +8,8 @@ from unittest.mock import patch
 import numpy as np
 import trimesh
 from worldgs.semantic_plan import validate_plan,repair_layout,extract_json
-from worldgs.learned_scene import assemble,backend_environment,learned_cameras,run_worker
-from worldgs.physical_render import blender_camera_matrix
+from worldgs.learned_scene import assemble,backend_environment,learned_cameras,run_worker,contact_height
+from worldgs.physical_render import blender_camera_matrix,matte_room_finish
 from worldgs.room import pose_at
 
 
@@ -22,6 +22,73 @@ def sample_plan():
 
 
 class LearnedSceneTest(unittest.TestCase):
+    def test_small_object_budget_keeps_room_spatial_coverage(self):
+        from worldgs.coverage_sampling import component_stratified_seed_ids
+        rng=np.random.default_rng(0)
+        room=rng.uniform(-4,4,(30000,3))
+        prop=rng.uniform(-.02,.02,(3000,3))
+        xyz=np.r_[room,prop]
+        groups=np.r_[np.zeros(len(room),int),np.ones(len(prop),int)]
+        ids=component_stratified_seed_ids(xyz,groups,4000,0)
+        self.assertEqual(len(np.unique(ids)),4000)
+        self.assertGreaterEqual((groups[ids]==1).sum(),1000)
+        for axis in range(3):
+            self.assertLess(xyz[ids,axis].min(),-3.9)
+            self.assertGreater(xyz[ids,axis].max(),3.9)
+
+    def test_colour_only_walls_are_plain_and_wood_is_not(self):
+        self.assertTrue(matte_room_finish('warm cream'))
+        self.assertTrue(matte_room_finish('white plaster'))
+        self.assertFalse(matte_room_finish('white wood panelling'))
+        self.assertFalse(matte_room_finish('blue patterned wallpaper'))
+    def test_supported_accessory_is_placed_on_parent_and_cycles_rejected(self):
+        plan=sample_plan()
+        plan['objects'][0].update(dimensions=[2.,.8,1.],position=[0.,2.])
+        plan['objects'][1].update(dimensions=[.2,.3,.2],position=[0.,2.],support='chair_00')
+        self.assertTrue(validate_plan(repair_layout(plan))['passed'])
+        self.assertAlmostEqual(plan['objects'][1]['bottom_y'],.7)
+        plan['objects'][0]['support']='drum_00'
+        with self.assertRaisesRegex(ValueError,'Cyclic support'):
+            validate_plan(plan)
+
+    def test_actual_support_mesh_rejects_voids_and_places_contact(self):
+        table=trimesh.creation.box(extents=[2.,.1,1.])
+        child=trimesh.creation.box(extents=[.2,.3,.2])
+        self.assertAlmostEqual(contact_height(table,child),-.05)
+        child.apply_translation([2.,0.,0.])
+        with self.assertRaisesRegex(ValueError,'not fully supported'):
+            contact_height(table,child)
+
+    def test_assembly_places_accessory_on_actual_mesh(self):
+        plan=sample_plan()
+        plan['objects'][0].update(dimensions=[2.,.2,1.],position=[0.,2.])
+        plan['objects'][1].update(dimensions=[.2,.1,.2],position=[0.,2.],yaw=0,support='chair_00')
+        with tempfile.TemporaryDirectory() as directory:
+            folder=Path(directory)
+            for obj in plan['objects']:
+                path=folder/'assets'/obj['id']
+                path.mkdir(parents=True)
+                mesh=trimesh.creation.box(extents=obj['dimensions']).subdivide().subdivide()
+                mesh.export(path/'generated.glb')
+            assemble(plan,folder)
+            parent=trimesh.load(folder/'assets/chair_00/placed.glb',force='mesh')
+            child=trimesh.load(folder/'assets/drum_00/placed.glb',force='mesh')
+            self.assertAlmostEqual(child.bounds[1,1],parent.bounds[0,1],places=5)
+            self.assertEqual(len(json.loads((folder/'assembly.json').read_text())['support_contacts']),1)
+
+    def test_small_components_receive_seed_budget(self):
+        from worldgs.teacher_geometry import sample_teacher_surface
+        large=trimesh.creation.box(extents=[10.,10.,10.])
+        tiny=trimesh.creation.box(extents=[.05,.05,.05])
+        mesh=trimesh.util.concatenate([large,tiny])
+        owners=np.r_[np.zeros(len(large.faces),int),np.ones(len(tiny.faces),int)]
+        class Renderer:
+            def shade(self,xyz,ids):
+                return np.ones_like(xyz)*.5,mesh.face_normals[ids]
+        points=sample_teacher_surface(mesh,Renderer(),owners,np.ones(len(mesh.faces),bool),
+                                     count=4000,seed=0,component_fraction=.35)
+        self.assertGreater((points['component_ids']==1).sum(),500)
+
     def test_arbitrary_object_categories_are_not_a_three_object_template(self):
         self.assertTrue(validate_plan(sample_plan())['passed'])
 

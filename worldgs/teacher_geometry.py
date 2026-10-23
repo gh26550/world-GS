@@ -21,12 +21,22 @@ def mesh_digest(vertices, faces):
     return digest.hexdigest()
 
 
-def sample_teacher_surface(mesh, renderer, owners, visible_faces, count=240000, seed=0):
+def sample_teacher_surface(mesh, renderer, owners, visible_faces, count=240000, seed=0, component_fraction=0.):
     rng = np.random.default_rng(seed)
     weights = mesh.area_faces*np.asarray(visible_faces, bool)
     if weights.sum() <= 0:
         raise ValueError('No mesh surfaces visible in training cameras')
-    ids = rng.choice(len(mesh.faces), count, p=weights/weights.sum())
+    probability=weights/weights.sum()
+    if not 0<=component_fraction<=1:
+        raise ValueError('component_fraction must be in [0,1]')
+    if component_fraction:
+        balanced=np.zeros_like(weights)
+        groups=np.unique(owners[weights>0])
+        for group in groups:
+            selected=owners==group
+            balanced[selected]=weights[selected]/weights[selected].sum()/len(groups)
+        probability=(1-component_fraction)*probability+component_fraction*balanced
+    ids = rng.choice(len(mesh.faces), count, p=probability)
     uv = rng.random((count, 2))
     uv[uv.sum(1) > 1] = 1-uv[uv.sum(1) > 1]
     bary = np.column_stack([1-uv.sum(1), uv])

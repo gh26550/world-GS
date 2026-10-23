@@ -7,6 +7,14 @@ import sys
 import numpy as np
 
 
+def matte_room_finish(description):
+    description=description.lower()
+    if re.search(r'plaster|paint|stucco',description):
+        return True
+    return bool(re.search(r'cream|white|beige|gray|grey|black|blue|red|green',description)) and not bool(
+        re.search(r'wood|tile|brick|stone|paper|pattern|metal|glass|marble',description))
+
+
 def blender_camera_matrix(pose):
     pose=np.asarray(pose)
     transform=np.array([[1.,0,0],[0,0,1],[0,-1,0]])
@@ -52,11 +60,12 @@ def render(job_file):
         texture.projection_blend=.15
         links.new(coordinate.outputs['Object'],texture.inputs['Vector'])
         description=job['plan']['room'][name].lower()
-        if re.search(r'plaster|paint|stucco',description):
+        if matte_room_finish(description):
             # A generic generated tile can invent lace/wallpaper on plain paint.
             # Keep the specified plain material physically plain, with micro-bump.
             tint=(.72,.69,.63,1.) if name=='walls' else (.8,.8,.78,1.)
             for word,color in [('black',(.025,.025,.025,1)),('white',(.82,.82,.8,1)),
+                               ('cream',(.82,.76,.61,1)),('beige',(.68,.59,.44,1)),
                                ('red',(.5,.05,.03,1)),('blue',(.05,.15,.4,1)),('green',(.1,.3,.12,1)),
                                ('gray',(.4,.4,.4,1)),('grey',(.4,.4,.4,1))]:
                 if re.search(r'\b'+word+r'\b',description):
