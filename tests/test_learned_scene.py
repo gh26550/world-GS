@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import patch
 import numpy as np
 import trimesh
-from worldgs.semantic_plan import validate_plan,repair_layout,extract_json
+from worldgs.semantic_plan import validate_plan,repair_layout,extract_json,normalize_size_locks
 from worldgs.learned_scene import assemble,backend_environment,learned_cameras,run_worker,contact_height
 from worldgs.physical_render import blender_camera_matrix,matte_room_finish
 from worldgs.room import pose_at
@@ -22,6 +22,18 @@ def sample_plan():
 
 
 class LearnedSceneTest(unittest.TestCase):
+    def test_inferred_dimensions_are_not_locked_by_object_counts(self):
+        plan=sample_plan()
+        plan['objects'][0]['size_locked']=True
+        normalize_size_locks(plan,'A room with exactly ten separate objects.')
+        self.assertFalse(plan['objects'][0]['size_locked'])
+        self.assertTrue(plan['assumptions'])
+        for prompt in ('A table 2m wide.','A table two meters wide.','A table six feet wide.'):
+            plan=sample_plan()
+            plan['objects'][0]['size_locked']=True
+            normalize_size_locks(plan,prompt)
+            self.assertTrue(plan['objects'][0]['size_locked'])
+
     def test_small_object_budget_keeps_room_spatial_coverage(self):
         from worldgs.coverage_sampling import component_stratified_seed_ids
         rng=np.random.default_rng(0)

@@ -13,6 +13,8 @@
 
 [実装箇所・検証結果・制約](docs/learned-v10.md)、[先行研究](docs/research.md)、[Unityへの取り込み](docs/unity.md)を参照してください。
 
+[10物体へ増やした、ごちゃついた部屋の生成条件と結果](docs/cluttered-room-20261026.md)も保存しています。
+
 ## 実行（このPCのWSL）
 
 ```bash

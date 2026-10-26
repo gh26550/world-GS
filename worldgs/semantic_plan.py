@@ -40,6 +40,17 @@ def extract_json(raw):
     return value
 
 
+def normalize_size_locks(plan,prompt):
+    """Do not turn model-inferred example dimensions into user constraints."""
+    units=r'\b(?:millimet(?:er|re)s?|centimet(?:er|re)s?|met(?:er|re)s?|mm|cm|inch(?:es)?|foot|feet|ft)\b|\d\s*m\b|メートル|センチ|ミリ|インチ'
+    if not re.search(units,prompt,re.I):
+        for obj in plan['objects']:
+            if obj.get('size_locked'):
+                obj['size_locked']=False
+                plan['assumptions'].append('Dimensions of '+obj['id']+' are inferred; the prompt contains no explicit metric dimension.')
+    return plan
+
+
 def resolve_supports(plan):
     """Topologically resolve floor/contact heights, rejecting dangling/cyclic supports."""
     objects={o['id']:o for o in plan['objects']}
@@ -257,7 +268,7 @@ def plan_with_llm(prompt, output, room_size=None, model_id=MODEL):
     tokenizer = AutoTokenizer.from_pretrained(model_id)
     model = AutoModelForCausalLM.from_pretrained(model_id,torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
                                                attn_implementation='sdpa').to('cuda' if torch.cuda.is_available() else 'cpu').eval()
-    def ask(messages,limit=2400):
+    def ask(messages,limit=6000):
         encoded = tokenizer.apply_chat_template(messages,tokenize=True,add_generation_prompt=True,return_tensors='pt',return_dict=True).to(model.device)
         with torch.inference_mode():
             generated = model.generate(**encoded,max_new_tokens=limit,do_sample=False,pad_token_id=tokenizer.eos_token_id)
@@ -281,7 +292,7 @@ def plan_with_llm(prompt, output, room_size=None, model_id=MODEL):
                         obj['position']=[obj.pop('x'),obj.pop('z')]
                 if room_size is not None:
                     plan['room']['size']=list(room_size)
-                plan=repair_layout(plan)
+                plan=repair_layout(normalize_size_locks(plan,prompt))
                 validation = validate_plan(plan)
                 audit_raw = ask([dict(role='system',content='Audit scene JSON against the ORIGINAL user prompt. Return ONLY {"missing":[],"contradictions":[]}. Check requested object counts and all spatial, appearance and lighting requirements. Objects requested ON a table or shelf MUST have support set to that object ID, not floor; next_to alone does not satisfy on. Do not treat planner assumptions as user requests. Report actual omissions only.'),
                                  dict(role='user',content=json.dumps(dict(original_prompt=prompt,scene=plan),ensure_ascii=False))],900)

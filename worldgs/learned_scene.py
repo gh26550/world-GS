@@ -3,6 +3,7 @@ import gc
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -11,7 +12,7 @@ from datetime import datetime,timezone
 import numpy as np
 from PIL import Image
 import trimesh
-from .semantic_plan import plan_with_llm,validate_plan,repair_layout,resolve_supports
+from .semantic_plan import plan_with_llm,validate_plan,repair_layout,resolve_supports,normalize_size_locks
 
 
 def backend_paths():
@@ -101,12 +102,12 @@ def learned_cameras(layout,views):
     return cameras
 
 
-def generate_images(plan,folder,seed):
+def generate_images(plan,folder,seed,retry_ids=None):
     from .pipeline import Models
     import torch
     from diffusers import StableDiffusionPipeline
     objects=plan['objects']
-    missing=[o for o in objects if not (folder/'assets'/o['id']/'candidate_03.png').exists()]
+    missing=[o for o in objects if o['id'] in retry_ids] if retry_ids is not None else [o for o in objects if not (folder/'assets'/o['id']/'candidate_03.png').exists()]
     materials=[('floor',plan['room']['floor']),('walls',plan['room']['walls']),('ceiling',plan['room']['ceiling'])]
     missing_materials=[(n,d) for n,d in materials if not usable_image(folder/'materials'/f'{n}.png')]
     if not missing and not missing_materials:
@@ -116,16 +117,21 @@ def generate_images(plan,folder,seed):
     pipe.enable_attention_slicing()
     try:
         for index,obj in enumerate(objects):
+            if retry_ids is not None and obj['id'] not in retry_ids:
+                continue
             directory=folder/'assets'/obj['id']
             directory.mkdir(parents=True,exist_ok=True)
-            for candidate in range(4):
+            existing=sorted(directory.glob('candidate_*.png'))
+            start=max([int(p.stem.split('_')[-1]) for p in existing],default=-1)+1 if retry_ids is not None else 0
+            for candidate in range(start,start+4):
                 filename=directory/f'candidate_{candidate:02d}.png'
                 if filename.exists():
                     continue
                 def limited(text,count):
                     return pipe.tokenizer.decode(pipe.tokenizer.encode(text,add_special_tokens=False)[:count])
-                prompt=(limited(obj['description'],35)+'. '+limited(plan['style'],15)+
-                        '. Full object in frame, white background, three quarter product photo')
+                prompt=('Wide distant product photograph of one small '+obj['label']+
+                        ', centered with ample white space, entire object fully visible. '+limited(obj['description'],23)+
+                        '. '+limited(plan['style'],10)+'. White studio background.')
                 image=pipe(prompt,negative_prompt='close-up, cropped, cut off, multiple objects, room, interior, walls, people, text, watermark, collage, duplicate, floor platform',
                     width=768 if candidate>=2 else 512,height=512,num_inference_steps=35,guidance_scale=7.,
                     generator=torch.Generator(models.device).manual_seed(seed+index*19+candidate)).images[0]
@@ -270,7 +276,8 @@ def generate_learned_scene(prompt,output,size,views,seed,room_size=None,resume=F
         status('planning')
         plan_file=folder/'planning/scene_plan.json'
         if plan_file.exists():
-            plan=json.loads(plan_file.read_text())
+            plan=normalize_size_locks(json.loads(plan_file.read_text()),prompt)
+            plan_file.write_text(json.dumps(plan,indent=2,ensure_ascii=False),encoding='utf-8')
             validate_plan(plan)
         else:
             options=dict(model_id=planner_model) if planner_model else {}
@@ -284,7 +291,16 @@ def generate_learned_scene(prompt,output,size,views,seed,room_size=None,resume=F
         environment.update(ATTN_BACKEND='sdpa',SPARSE_ATTN_BACKEND='sdpa',WORLDMESH_LOW_VRAM='1',XFORMERS_DISABLED='1')
         if any(not (folder/'assets'/o['id']/'segmentation.json').exists() for o in plan['objects']):
             status('segmentation')
-            run_worker([segment,worker,'segment',folder/'asset_job.json','--root',root],folder/'logs/segment.log',backend_environment(segment,environment))
+            for attempt in range(7):
+                try:
+                    run_worker([segment,worker,'segment',folder/'asset_job.json','--root',root],folder/'logs/segment.log',backend_environment(segment,environment))
+                    break
+                except RuntimeError:
+                    match=re.search(r'Could not isolate ([a-z][a-z0-9_]*):',(folder/'logs/segment.log').read_text())
+                    if match is None or attempt==6:
+                        raise
+                    status('retry_object_images',object=match.group(1),attempt=attempt+1)
+                    generate_images(plan,folder,seed,retry_ids={match.group(1)})
         if any(not (folder/'assets'/o['id']/'asset.json').exists() for o in plan['objects']):
             status('mesh_generation')
             run_worker([reconstruct,worker,'reconstruct',folder/'asset_job.json','--root',root],folder/'logs/reconstruct.log',backend_environment(reconstruct,environment),cwd=root)
