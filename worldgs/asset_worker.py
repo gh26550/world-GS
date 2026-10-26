@@ -6,6 +6,8 @@ launched by argument arrays, never a model-generated shell command.
 import argparse
 import json
 import os
+import re
+import shutil
 from pathlib import Path
 import sys
 import numpy as np
@@ -24,7 +26,16 @@ def segment(job, root):
         if (folder/'segmentation.json').exists():
             continue
         errors=[]
-        for candidate in sorted(folder.glob('candidate_*.png')):
+        candidates=sorted(folder.glob('candidate_*.png'))
+        if re.search(r'bookcase|bookshelf',entry['label'],re.I):
+            def aspect(path):
+                with Image.open(path) as image:
+                    return image.width/image.height
+            candidates=sorted(candidates,key=aspect)
+        supplied=folder/'reference_asset.png'
+        if supplied.exists():
+            candidates=[supplied]
+        for candidate in candidates:
             image = Image.open(candidate).convert('RGB')
             with torch.inference_mode():
                 state = processor.set_image(image)
@@ -71,9 +82,23 @@ def reconstruct(job, root):
         python=sys.executable,torch=torch.__version__,cuda=torch.version.cuda,source_root=str(root),
         attention='sdpa; DINO xformers disabled',low_vram=True),indent=2))
     inference = Inference(str(root/'checkpoints/hf/pipeline.yaml'),compile=False)
+    entries={entry['id']:entry for entry in job['objects']}
     for entry in job['objects']:
         folder = Path(entry['folder'])
         if (folder/'asset.json').exists() and (folder/'generated.glb').exists():
+            continue
+        if entry.get('instance_of'):
+            source_id=entry['instance_of']
+            if source_id not in entries or source_id==entry['id']:
+                raise ValueError('Unknown or self-referencing asset instance: '+str(source_id))
+            source=Path(entries[source_id]['folder'])
+            if not (source/'generated.glb').exists():
+                raise ValueError('Asset instance source must precede its instances: '+source_id)
+            shutil.copyfile(source/'generated.glb',folder/'generated.glb')
+            metadata=json.loads((source/'asset.json').read_text())
+            metadata.update(id=entry['id'],instance_of=source_id)
+            (folder/'asset.json').write_text(json.dumps(metadata,indent=2))
+            print('Reconstructed '+entry['id']+' (instance of '+source_id+')',flush=True)
             continue
         image = np.asarray(Image.open(folder/'image.png').convert('RGB'))
         mask = np.asarray(Image.open(folder/'mask.png')) > 127

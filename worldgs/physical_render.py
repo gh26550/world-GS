@@ -91,6 +91,15 @@ def render(job_file):
             name='floor' if obj.name.startswith('room_1_1') else 'ceiling' if obj.name.startswith('room_1_0') else 'walls'
             obj.data.materials.clear()
             obj.data.materials.append(materials[name])
+        elif obj.name.startswith('window_outdoor'):
+            sky=bpy.data.materials.new('OutdoorSky')
+            sky.use_nodes=True
+            bsdf=sky.node_tree.nodes.get('Principled BSDF')
+            bsdf.inputs['Base Color'].default_value=(.72,.82,.88,1.)
+            bsdf.inputs['Emission Color'].default_value=(.72,.82,.88,1.)
+            bsdf.inputs['Emission Strength'].default_value=1.2
+            obj.data.materials.clear()
+            obj.data.materials.append(sky)
     scene=bpy.context.scene
     scene.render.engine='CYCLES'
     device='CPU'
@@ -122,6 +131,19 @@ def render(job_file):
     w,h,l=job['plan']['room']['size']
     power=float(job['plan']['lighting']['power'])
     color=job['plan']['lighting']['color']
+    window=job['plan']['room'].get('window')
+    if window:
+        from mathutils import Vector
+        daylight=bpy.data.lights.new('WindowDaylight','AREA')
+        daylight.energy=1800
+        daylight.color=(.93,.96,1.)
+        daylight.shape='RECTANGLE'
+        daylight.size=window['width']
+        daylight.size_y=window['height']
+        lamp=bpy.data.objects.new(daylight.name,daylight)
+        scene.collection.objects.link(lamp)
+        lamp.location=(window['x'],l/2+.12,-h/2+window['sill']+window['height']/2)
+        lamp.rotation_euler=Vector((0,-1,0)).to_track_quat('-Z','Y').to_euler()
     for i,(x,z) in enumerate([(-w/4,-l/4),(-w/4,l/4),(w/4,-l/4),(w/4,l/4)]):
         light=bpy.data.lights.new(f'CeilingArea_{i}','AREA')
         light.energy=power/4

@@ -64,6 +64,6 @@ def structure_report(mesh, components, points):
                                    residual_max=float(residual.max()) if residual.size else None)
     expected = (mesh.triangles[points['triangle_ids']]*points['barycentric'][..., None]).sum(1)
     error = np.linalg.norm(points['xyz']-expected, axis=1)
-    passed = len(checks) == 6 and all(v['inner_triangles'] == 2 and v['residual_max'] is not None and v['residual_max'] < 1e-5 for v in checks.values()) and error.max() < 1e-5
+    passed = len(checks) == 6 and all(v['inner_triangles'] >= 2 and v['residual_max'] is not None and v['residual_max'] < 1e-5 for v in checks.values()) and error.max() < 1e-5
     return dict(passed=bool(passed), structure=checks, seed_to_assigned_surface_max=float(error.max()),
                 note='Checks procedural room planes and seed attachment, not real-world reconstruction accuracy')

@@ -8,7 +8,7 @@ from unittest.mock import patch
 import numpy as np
 import trimesh
 from worldgs.semantic_plan import validate_plan,repair_layout,extract_json,normalize_size_locks
-from worldgs.learned_scene import assemble,backend_environment,learned_cameras,run_worker,contact_height
+from worldgs.learned_scene import assemble,backend_environment,learned_cameras,run_worker,contact_height,configured_front_camera
 from worldgs.physical_render import blender_camera_matrix,matte_room_finish
 from worldgs.room import pose_at
 
@@ -22,6 +22,55 @@ def sample_plan():
 
 
 class LearnedSceneTest(unittest.TestCase):
+    def test_reference_camera_rejects_furniture_and_outside_room(self):
+        layout=[dict(min=[-3,-1.5,-3],max=[3,1.5,3]),dict(min=[1,.5,1],max=[2,1.5,2])]
+        pose=configured_front_camera(layout,dict(eye=[0,0,-2],target=[0,.3,1]))
+        np.testing.assert_allclose(pose[:3,3],[0,0,-2])
+        for eye in ([1.5,1.,1.5],[0,0,-4]):
+            with self.assertRaisesRegex(ValueError,'Reference camera'):
+                configured_front_camera(layout,dict(eye=eye,target=[0,0,1]))
+
+    def test_window_is_an_actual_wall_aperture(self):
+        from worldgs.window_geometry import add_window,window_bounds
+        from worldgs.mesh_scene import build_components
+        from PIL import Image
+        from trimesh.ray.ray_pyembree import RayMeshIntersector
+        room=dict(size=[6.,3.,6.],window=dict(x=0.,width=1.8,sill=.8,height=1.8))
+        _,parts,components,_=build_components([dict(name='room',kind='room',min=[-3,-1.5,-3],max=[3,1.5,3])],Image.new('RGB',(32,32),'white'))
+        add_window(room,parts,components)
+        rays=RayMeshIntersector(parts[5])
+        hits,ids,_=rays.intersects_location(np.array([[.2,0.,0.],[2.,0.,0.]]),np.array([[0.,0.,1.],[0.,0.,1.]]),multiple_hits=False)
+        self.assertEqual(ids.tolist(),[1])
+        self.assertEqual(len(parts),9)
+        self.assertGreater(components[5]['faces'],12)
+        room['window']['width']=7
+        with self.assertRaisesRegex(ValueError,'window aperture'):
+            window_bounds(room)
+
+    def test_floor_rug_does_not_enclose_camera(self):
+        plan=sample_plan()
+        plan['objects'][0].update(label='rug',dimensions=[2.,.012,2.],position=[0.,0.])
+        self.assertTrue(validate_plan(repair_layout(plan))['passed'])
+        self.assertLess(np.linalg.norm(plan['objects'][0]['position']),.01)
+
+    def test_window_preserves_room_plane_and_surface_contracts(self):
+        from worldgs.window_geometry import add_window
+        from worldgs.mesh_scene import build_components
+        from worldgs.teacher_geometry import sample_teacher_surface,structure_report
+        from PIL import Image
+        room=dict(size=[6.,3.,6.],window=dict(x=0.,width=1.8,sill=.8,height=1.8))
+        _,parts,components,_=build_components([dict(name='room',kind='room',min=[-3,-1.5,-3],max=[3,1.5,3])],Image.new('RGB',(32,32),'white'))
+        add_window(room,parts,components)
+        mesh=trimesh.util.concatenate(parts)
+        owners=np.concatenate([np.full(len(part.faces),i,int) for i,part in enumerate(parts)])
+        class Renderer:
+            def shade(self,xyz,ids):
+                return np.ones_like(xyz)*.5,mesh.face_normals[ids]
+        points=sample_teacher_surface(mesh,Renderer(),owners,np.ones(len(mesh.faces),bool),count=2000)
+        report=structure_report(mesh,components,points)
+        self.assertTrue(report['passed'])
+        self.assertEqual(report['structure']['room_2_1']['inner_triangles'],8)
+
     def test_inferred_dimensions_are_not_locked_by_object_counts(self):
         plan=sample_plan()
         plan['objects'][0]['size_locked']=True

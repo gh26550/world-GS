@@ -189,6 +189,9 @@ def train_mesh(path, steps, max_points):
     copyfile(path/'scene.ply', path/'scene_unity.ply')
     np.savez_compressed(path/'gaussians.npz', **{key: cpu(value) for key, value in parameters.items()})
     evaluation = []
+    with torch.inference_mode():
+        front_result,_,_=render(poses[0])
+    Image.fromarray(np.uint8(np.clip(cpu(front_result[0,...,:3]),0,1)*255)).save(path/'front_render.png')
     previews = []
     for i, frame in enumerate(meta['heldout_frames']):
         with torch.no_grad():

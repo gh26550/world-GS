@@ -23,7 +23,7 @@ Put objects inside room bounds without bounding-box intersections. Do not place 
 Each object also has support="floor" or another object's ID. Use support for books, vases and other tabletop accessories. Their x,z are world coordinates. Supported objects must fit entirely over their support. No cyclic support chains.
 A closed book lying flat has height about 0.03m, width 0.2m and depth 0.28m; do not confuse height with the cover length. All size fields are meters.
 For a furnished/lived-in/decorated room, infer a modest coherent set of small accessories (books, vase, bowl), record them as assumptions and give each requirement provenance. Respect explicitly requested counts. Do not add furniture when the prompt explicitly forbids it.
-Only one rectangular room is implemented. Openings, multiple rooms, ceiling-hung objects must be listed in unsupported rather than faked.
+Only one rectangular room is implemented. One rectangular window on the back (+z) wall is supported: add room.window={"x":0,"width":1.7,"sill":0.8,"height":1.7}. It is architecture, NOT an object. Keep furniture clear of its opening. Other openings, multiple rooms, ceiling-hung objects must be listed in unsupported rather than faked.
 Use requirements to enumerate ALL requested object counts, appearance, room, lighting and relationships.
 Use NAMED size fields width,height,depth. A tall bookshelf has height about 2.0 and depth about 0.35. Set size_locked=true ONLY if the user explicitly demands numerical dimensions.
 Do not add unrequested large furniture. Share the room style, palette and material family across all object descriptions. Record inferred counts, positions and dimensions in assumptions.
@@ -105,6 +105,8 @@ def validate_plan(plan):
     size = np.asarray(plan['room']['size'],float)
     if size.shape != (3,) or not np.isfinite(size).all() or (size < [3,2,3]).any() or (size > 30).any():
         raise ValueError('Invalid room dimensions')
+    from .window_geometry import window_bounds
+    window_bounds(plan['room'])
     objects = plan['objects']
     if not isinstance(objects,list) or not 1 <= len(objects) <= 24:
         raise ValueError('Scene needs 1–24 explicit object instances')
@@ -116,7 +118,7 @@ def validate_plan(plan):
             raise ValueError('Object IDs must be unique safe identifiers')
         names.add(name)
         dimensions,position = np.asarray(obj['dimensions'],float),np.asarray(obj['position'],float)
-        minimum=.005 if obj.get('support','floor')!='floor' else .05
+        minimum=.005 if obj.get('support','floor')!='floor' or re.search(r'rug|carpet|mat',obj.get('label',''),re.I) else .05
         if dimensions.shape != (3,) or position.shape != (2,) or not np.isfinite(np.r_[dimensions,position,obj['yaw']]).all() or (dimensions < minimum).any():
             raise ValueError(f'Invalid geometry for {name}: dimensions must be exactly 3 positive numbers and position exactly 2 numbers [x,z]; got {obj}')
         if any(not isinstance(obj.get(key),str) or not obj[key].strip() for key in ('label','description')):
@@ -124,7 +126,7 @@ def validate_plan(plan):
         lo,hi = object_bounds(obj,size[1])
         if (lo < -size/2-.001).any() or (hi > size/2+.001).any():
             raise ValueError('Object outside room: '+name)
-        if lo[0] < .2 and hi[0] > -.2 and lo[2] < .2 and hi[2] > -.2:
+        if (lo < .2).all() and (hi > -.2).all():
             raise ValueError('Object encloses front camera: '+name)
         for other,(a,b) in bounds.items():
             if (np.minimum(hi,b)-np.maximum(lo,a) > .02).all():
@@ -208,7 +210,8 @@ def repair_layout(plan):
         values=list((centers-proposed).ravel()*.2)
         for i in range(len(objects)):
             penetration=extents[i]/2+.25-np.abs(centers[i])
-            values.append(50*max(0,float(penetration.min())))
+            a,b=object_bounds(objects[i],h)
+            values.append(50*max(0,float(penetration.min())) if a[1]<.2 and b[1]>-.2 else 0.)
             for j in range(i):
                 ai,bi=object_bounds(objects[i],h)
                 aj,bj=object_bounds(objects[j],h)

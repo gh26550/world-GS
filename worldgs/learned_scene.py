@@ -65,6 +65,18 @@ def usable_image(path):
     return path.exists() and np.asarray(Image.open(path)).mean()>1.
 
 
+def configured_front_camera(layout,spec):
+    from .mesh_scene import look_at
+    eye,target=np.asarray(spec['eye'],float),np.asarray(spec['target'],float)
+    if eye.shape!=(3,) or target.shape!=(3,) or not np.isfinite([eye,target]).all() or np.linalg.norm(eye-target)<.1:
+        raise ValueError('Invalid reference camera')
+    lo,hi=np.asarray(layout[0]['min']),np.asarray(layout[0]['max'])
+    if not ((eye>lo+.08)&(eye<hi-.08)).all() or any(
+        ((eye>np.asarray(s['min'])-.05)&(eye<np.asarray(s['max'])+.05)).all() for s in layout[1:]):
+        raise ValueError('Reference camera is outside room or inside furniture')
+    return look_at(eye,target)
+
+
 def learned_cameras(layout,views):
     from .mesh_scene import teacher_camera_set,look_at
     from .room import pose_at
@@ -107,7 +119,7 @@ def generate_images(plan,folder,seed,retry_ids=None):
     import torch
     from diffusers import StableDiffusionPipeline
     objects=plan['objects']
-    missing=[o for o in objects if o['id'] in retry_ids] if retry_ids is not None else [o for o in objects if not (folder/'assets'/o['id']/'candidate_03.png').exists()]
+    missing=[o for o in objects if o['id'] in retry_ids] if retry_ids is not None else [o for o in objects if not (folder/'assets'/o['id']/'candidate_03.png').exists() and not (folder/'assets'/o['id']/'reference_asset.png').exists()]
     materials=[('floor',plan['room']['floor']),('walls',plan['room']['walls']),('ceiling',plan['room']['ceiling'])]
     missing_materials=[(n,d) for n,d in materials if not usable_image(folder/'materials'/f'{n}.png')]
     if not missing and not missing_materials:
@@ -121,6 +133,8 @@ def generate_images(plan,folder,seed,retry_ids=None):
                 continue
             directory=folder/'assets'/obj['id']
             directory.mkdir(parents=True,exist_ok=True)
+            if (directory/'reference_asset.png').exists():
+                continue
             existing=sorted(directory.glob('candidate_*.png'))
             start=max([int(p.stem.split('_')[-1]) for p in existing],default=-1)+1 if retry_ids is not None else 0
             for candidate in range(start,start+4):
@@ -132,8 +146,12 @@ def generate_images(plan,folder,seed,retry_ids=None):
                 prompt=('Wide distant product photograph of one small '+obj['label']+
                         ', centered with ample white space, entire object fully visible. '+limited(obj['description'],23)+
                         '. '+limited(plan['style'],10)+'. White studio background.')
+                tall=bool(re.search(r'bookcase|bookshelf',obj['label'],re.I))
+                if tall:
+                    prompt=('Full-length photograph of ONE tall narrow freestanding bookcase, entire frame and feet visible with empty margins. '+
+                            limited(obj['description'],25)+'. '+limited(plan['style'],10)+'. White studio background.')
                 image=pipe(prompt,negative_prompt='close-up, cropped, cut off, multiple objects, room, interior, walls, people, text, watermark, collage, duplicate, floor platform',
-                    width=768 if candidate>=2 else 512,height=512,num_inference_steps=35,guidance_scale=7.,
+                    width=512 if tall else (768 if candidate>=2 else 512),height=768 if tall else 512,num_inference_steps=35,guidance_scale=7.,
                     generator=torch.Generator(models.device).manual_seed(seed+index*19+candidate)).images[0]
                 image.save(filename)
                 filename.with_suffix('.json').write_text(json.dumps(dict(model='stable-diffusion-v1-5/stable-diffusion-v1-5',
@@ -165,6 +183,8 @@ def assemble(plan,folder):
     w,h,l=plan['room']['size']
     room=dict(name='room',kind='room',min=[-w/2,-h/2,-l/2],max=[w/2,h/2,l/2])
     _,parts,components,_=build_components([room],Image.new('RGB',(64,64),'ivory'))
+    from .window_geometry import add_window
+    add_window(plan['room'],parts,components)
     geometries=list(parts)
     scene=trimesh.Scene()
     for i,part in enumerate(parts):
@@ -187,6 +207,9 @@ def assemble(plan,folder):
         # preserves generated aspect ratio; placement is solved again afterward.
         scale=float(min(np.median(np.asarray(obj['dimensions'])/extent),(h-.15)/extent[1]))
         mesh.apply_scale(scale)
+        if re.search(r'\b(rug|carpet|mat)\b',obj['label'],re.I):
+            mesh.apply_scale([1,.012/mesh.extents[1],1])
+            obj['floor_covering_thickness']=.012
         if obj.get('size_locked') and (np.abs(mesh.extents/np.asarray(obj['dimensions'])-1)>.15).any():
             raise ValueError('Generated shape cannot meet explicit dimensions without distortion: '+obj['id'])
         center=(mesh.bounds[0]+mesh.bounds[1])/2
@@ -284,7 +307,7 @@ def generate_learned_scene(prompt,output,size,views,seed,room_size=None,resume=F
             plan=plan_with_llm(prompt,folder/'planning',room_size,**options)
         status('object_images',objects=len(plan['objects']))
         generate_images(plan,folder,seed)
-        job=dict(seed=seed,objects=[dict(id=o['id'],label=o['label'],folder=str(folder/'assets'/o['id'])) for o in plan['objects']])
+        job=dict(seed=seed,objects=[dict(id=o['id'],label=o['label'],folder=str(folder/'assets'/o['id']),instance_of=o.get('asset_instance_of')) for o in plan['objects']])
         (folder/'asset_job.json').write_text(json.dumps(job,indent=2))
         worker=Path(__file__).with_name('asset_worker.py')
         environment=os.environ.copy()
@@ -308,6 +331,8 @@ def generate_learned_scene(prompt,output,size,views,seed,room_size=None,resume=F
         mesh,components,owners,layout=assemble(plan,folder)
         from .geometry import intrinsics
         cameras=learned_cameras(layout,views)
+        if plan.get('reference_camera'):
+            cameras[0]=('front',configured_front_camera(layout,plan['reference_camera']))
         frames=[]
         for i,(target,pose) in enumerate(cameras):
             prefix='heldout' if i%5==2 and not target.startswith('structure_') else 'view'
