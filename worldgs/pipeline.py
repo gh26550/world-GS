@@ -54,19 +54,19 @@ class Models:
         self.torch.cuda.empty_cache()
         return Image.fromarray(result)
 
-    def detect(self, image, prompt):
+    def detect(self, image, prompt, labels=None, confidence=.30, text_confidence=.25, max_detections=8):
         import inspect
         from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection
         vocabulary = [('sofa', ('sofa', 'couch')), ('table', ('table',)), ('bookshelf', ('bookshel', 'bookcase')),
                       ('chair', ('chair',)), ('bed', ('bed',)), ('cabinet', ('cabinet',))]
-        labels = [label for label, words in vocabulary if any(word in prompt.lower() for word in words)] or ['sofa', 'table', 'bookshelf']
+        labels = labels or [label for label, words in vocabulary if any(word in prompt.lower() for word in words)] or ['sofa', 'table', 'bookshelf']
         processor = AutoProcessor.from_pretrained('IDEA-Research/grounding-dino-tiny')
         model = AutoModelForZeroShotObjectDetection.from_pretrained('IDEA-Research/grounding-dino-tiny').to(self.device)
         inputs = processor(images=image, text='. '.join(labels)+'.', return_tensors='pt').to(self.device)
         with self.torch.no_grad():
             outputs = model(**inputs)
         threshold = 'box_threshold' if 'box_threshold' in inspect.signature(processor.post_process_grounded_object_detection).parameters else 'threshold'
-        result = processor.post_process_grounded_object_detection(outputs, inputs.input_ids, target_sizes=[image.size[::-1]], text_threshold=.25, **{threshold: .30})[0]
+        result = processor.post_process_grounded_object_detection(outputs, inputs.input_ids, target_sizes=[image.size[::-1]], text_threshold=text_confidence, **{threshold: confidence})[0]
         names = result.get('text_labels', result.get('labels'))
         detections = [{'box': box.cpu().tolist(), 'label': str(label), 'score': float(score)} for box, label, score in zip(result['boxes'], names, result['scores'])]
         selected = []
@@ -83,7 +83,7 @@ class Models:
         del model, processor, outputs, inputs
         gc.collect()
         self.torch.cuda.empty_cache()
-        return selected[:8]
+        return selected[:max_detections]
 
     def controlled_complete(self, prompt, rgb, missing, depth, index, negative_prompt='', control_strength=1.):
         from diffusers import ControlNetModel, StableDiffusionControlNetInpaintPipeline
@@ -170,7 +170,13 @@ def generate_legacy(prompt, output, size=512, views=24, seed=0, demo=False):
     return metadata
 
 
-def generate(prompt, output, size=512, views=24, seed=0, demo=False, mode='learned', front_image=None, room_size=None, layout_file=None, resume=False, planner_model=None):
+def generate(prompt, output, size=512, views=24, seed=0, demo=False, mode='image-room', front_image=None, room_size=None, layout_file=None, resume=False, planner_model=None):
+    if mode == 'image-room':
+        if demo or layout_file:
+            raise ValueError('image-room requires real room images; demo/layout overrides are not supported')
+        from .learned_scene import generate_learned_scene
+        return generate_learned_scene(prompt,output,size,views,seed,room_size,resume,planner_model,
+                                      image_room=True,front_image=front_image)
     if mode=='learned':
         if demo or layout_file or front_image:
             raise ValueError('learned mode uses prompt-only generation; demo/layout/front-image overrides are not supported')

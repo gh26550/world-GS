@@ -1,28 +1,23 @@
 # World-GS
 
-プロンプトから要求を整理し、物体ごとの生成メッシュを組み立て、全周の参照画像から3D Gaussian Splattingを学習する研究用実装です。既定は **`--mode learned`** です。[家具上の小物・接触検査・近距離多視点の拡張（v11）](docs/furnished-room-v11.md)を追加しました。
+プロンプトから部屋全体の正面画像を作り、そこから360°の室内構成を推定し、共通メッシュの多視点参照から3D Gaussian Splattingを学習する研究用実装です。既定は **`--mode image-room`** です。
 
-```text
-プロンプト → ローカルLLMのシーングラフ → 寸法・衝突・配置関係の検査
-           → 物体画像 → SAM3で分割 → SAM 3DでUV付きメッシュ生成
-           → 形状比率を保って配置 → 材質・照明付きの全周RGB-D描画
-           → 面上の参照点 → 位置・回転・サイズも最適化する3DGS
-```
+1. 部屋全体の正面画像を生成し、画像を読んで全体の配置・支持関係を推定します。
+2. 側面・背面の部屋画像を仮形状で誘導して補完します。
+3. 室内画像から物体を切り出してSAM3Dメッシュを復元し、部屋全体の共通メッシュを組み立てます。
+4. 全周のRGB・メッシュ深度・法線・面上の参照点を取得し、3DGSを学習します。
 
-要求された物体を正面画像の検出結果で削除せず、各物体を個別に生成します。メッシュ生成に失敗した場合はエラーとして停止し、箱や手続き的家具への自動代替は行いません。参照深度は組み立てたメッシュから直接取得します。
+[新方式の処理・出力・制約](docs/image-room-v12.md)を参照してください。背面は推測です。最初の画像は `source_front.png`、補完画像は `room_images/`、基準メッシュは `scene_mesh.glb`、GS教師は `view_*.png`、学習後GSは `scene_unity.ply` です。
 
-[実装箇所・検証結果・制約](docs/learned-v10.md)、[先行研究](docs/research.md)、[Unityへの取り込み](docs/unity.md)を参照してください。
+従来の「物体画像を個別生成する」方式は **`--mode learned`** に残しています。既存の生成を再開するときも、従来の方式には `--mode learned --resume` を明示してください。
 
-[10物体へ増やした、ごちゃついた部屋の生成条件と結果](docs/cluttered-room-20261026.md)も保存しています。
-
-[参考画像に合わせた窓付き読書室](docs/reference-library-20261026.md)では、画像から明示した配置、参照付きの家具画像、矩形の背面窓を使っています。
-
+[従来方式](docs/learned-v10.md)、[小物と支持検査](docs/furnished-room-v11.md)、[先行研究](docs/research.md)、[Unityへの取り込み](docs/unity.md)、[参考画像に合わせた読書室](docs/reference-library-20261026.md)。
 ## 実行（このPCのWSL）
 
 ```bash
 cd '/home/dpc7/world GS'
-./run.sh generate --prompt 'A cozy living room with a sofa, bookshelves and a wooden table, wide angle interior photograph' --output runs/livingroom_learned_new --size 384 --views 12 --seed 42
-./run.sh train runs/livingroom_learned_new --steps 2000 --max-points 100000
+./run.sh generate --prompt 'A cozy living room with a sofa, bookshelves and a wooden table, wide angle interior photograph' --output runs/livingroom_image_new --size 384 --views 12 --seed 42
+./run.sh train runs/livingroom_image_new --steps 2000 --max-points 100000
 ```
 
 通常の入力はプロンプトのみです。`--room-size WIDTH HEIGHT LENGTH`を指定した場合は部屋寸法を優先します。未指定の寸法や配置は推定であり、実測値ではありません。
@@ -32,7 +27,7 @@ cd '/home/dpc7/world GS'
 生成済みの段階から再開する場合は、**同じプロンプト・サイズ・視点数・seed・部屋寸法指定**に`--resume`を追加します。既存の別要求のフォルダは上書きしません。
 
 ```bash
-./run.sh generate --prompt 'A cozy living room with a sofa, bookshelves and a wooden table, wide angle interior photograph' --output runs/livingroom_learned_new --size 384 --views 12 --seed 42 --resume
+./run.sh generate --prompt 'A cozy living room with a sofa, bookshelves and a wooden table, wide angle interior photograph' --output runs/livingroom_image_new --size 384 --views 12 --seed 42 --resume
 ```
 
 計画器だけを検証するときは、別の空フォルダを指定します。
@@ -56,7 +51,7 @@ export WORLDGS_SAM3D_PYTHON="$HOME/miniforge/envs/worldmesh-sam3d-objects/bin/py
 export WORLDGS_BLENDER="$HOME/software/blender-5.1.2-linux-x64/blender"
 ```
 
-計画器は既定で`Qwen/Qwen2.5-3B-Instruct`を使用し、初回にモデルを取得します。変更する場合は`generate --planner-model MODEL`、計画単体では`plan --model MODEL`を指定します。画像・分割・3D生成は順番に実行してGPUメモリを解放します。既存の別プロジェクト環境を上書きインストールしません。
+新方式の画像解析は既定で`Qwen/Qwen2.5-VL-3B-Instruct`、従来のlearned計画器は`Qwen/Qwen2.5-3B-Instruct`を使用し、初回にモデルを取得します。変更する場合は`generate --planner-model MODEL`、計画単体では`plan --model MODEL`を指定します。画像・分割・3D生成は順番に実行してGPUメモリを解放します。既存の別プロジェクト環境を上書きインストールしません。
 
 ## 出力
 

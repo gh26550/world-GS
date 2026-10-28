@@ -28,7 +28,8 @@ def foreground_coverage_loss(alpha, confidence, mask):
 def train_mesh(path, steps, max_points):
     path = Path(path)
     meta = json.loads((path/'scene.json').read_text())
-    prompt_mesh = meta.get('mode') in ('prompt_mesh_radiance_v9','learned_mesh_v10')
+    learned_mode = meta.get('mode') in ('learned_mesh_v10','image_room_mesh_v12')
+    prompt_mesh = learned_mode or meta.get('mode')=='prompt_mesh_radiance_v9'
     expanded = prompt_mesh or meta.get('mode') in ('progressive_rgbd_v4', 'progressive_rgbd_v5', 'global_tsdf_v6', 'global_tsdf_v7')
     coverage_mode = prompt_mesh or meta.get('mode')=='global_tsdf_v7'
     if meta.get('mode') in ('global_tsdf_v6', 'global_tsdf_v7'):
@@ -49,7 +50,7 @@ def train_mesh(path, steps, max_points):
         return x.detach().cpu().numpy()
     source = np.load(path/'points.npz')
     matte_components=[]
-    if meta.get('mode')=='learned_mesh_v10':
+    if learned_mode:
         room=json.loads((path/'render_job.json').read_text())['plan']['room']
         from .physical_render import matte_room_finish
         if matte_room_finish(room['walls']):
@@ -58,17 +59,17 @@ def train_mesh(path, steps, max_points):
             matte_components.append(2)
     from .coverage_sampling import stratified_seed_ids, coverage_drop_mask,component_stratified_seed_ids
     ids = stratified_seed_ids(source['xyz'], max_points, meta['seed']) if coverage_mode else np.random.default_rng(meta['seed']).permutation(len(source['xyz']))[:max_points]
-    if meta.get('mode')=='learned_mesh_v10':
+    if learned_mode:
         # Preserve small objects when reducing the area-weighted cloud.
         ids=component_stratified_seed_ids(source['xyz'],source['component_ids'],max_points,meta['seed'])
     initial = source['xyz'][ids]
     n = len(initial)
     distance = cKDTree(initial).query(initial, k=2)[0][:, 1]
     radius = np.clip(distance*.8, .008, .08)
-    if meta.get('mode')=='learned_mesh_v10':
+    if learned_mode:
         neighbours=cKDTree(initial).query(initial,k=min(7,n))[0][:,1:]
         radius=np.clip(neighbours.mean(1)*.85,.002,.12)
-    normal_radius=np.minimum(radius*.25,.01) if meta.get('mode')=='learned_mesh_v10' else radius*.5
+    normal_radius=np.minimum(radius*.25,.01) if learned_mode else radius*.5
     parameters = torch.nn.ParameterDict({
         'means': torch.nn.Parameter(t(initial)),
         'scales': torch.nn.Parameter(t(np.log(np.column_stack([radius, radius, normal_radius])))),
@@ -225,5 +226,5 @@ def train_mesh(path, steps, max_points):
         'matte_room_components':matte_components,'matte_room_sh_degree':0 if matte_components else None,
         'nearest_source_distance_median': float(np.median(nearest)), 'nearest_source_distance_p95': float(np.quantile(nearest, .95)), 'log': log}
     (path/'training.json').write_text(json.dumps(training, indent=2), encoding='utf-8')
-    (path/'evaluation.json').write_text(json.dumps({'reference': 'heldout physically rendered UV-mesh views; not independent real-world ground truth' if meta.get('mode')=='learned_mesh_v10' else 'heldout shared photographic surface renders on the same prompt mesh; not independent ground truth' if prompt_mesh else 'heldout updated generated RGBD geometry renders; not independent ground truth' if expanded else 'heldout triangle mesh renders; not real-world ground truth', 'frames': evaluation}, indent=2), encoding='utf-8')
+    (path/'evaluation.json').write_text(json.dumps({'reference': 'heldout physically rendered UV-mesh views; not independent real-world ground truth' if learned_mode else 'heldout shared photographic surface renders on the same prompt mesh; not independent ground truth' if prompt_mesh else 'heldout updated generated RGBD geometry renders; not independent ground truth' if expanded else 'heldout triangle mesh renders; not real-world ground truth', 'frames': evaluation}, indent=2), encoding='utf-8')
     print(f'Saved {len(means)} freely optimized Gaussians; SH degree {degree}', flush=True)

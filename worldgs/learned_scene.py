@@ -278,12 +278,15 @@ def contact_height(parent,child):
     return float(hits[:,1].min())
 
 
-def generate_learned_scene(prompt,output,size,views,seed,room_size=None,resume=False,planner_model=None):
+def generate_learned_scene(prompt,output,size,views,seed,room_size=None,resume=False,planner_model=None,*,image_room=False,front_image=None):
     if size<64 or size%8 or views<8:
         raise ValueError('size >=64 divisible by8; views>=8')
     root,segment,reconstruct,blender=backend_paths()
     folder=Path(output).resolve()
     config=dict(prompt=prompt,size=size,views=views,seed=seed,room_size=list(room_size) if room_size else None,planner_model=planner_model)
+    if image_room:
+        from .image_room import image_digest
+        config.update(mode='image-room',front_image_sha256=image_digest(front_image) if front_image else None)
     folder.mkdir(parents=True,exist_ok=True)
     manifest=folder/'request.json'
     if any(folder.iterdir()):
@@ -297,6 +300,10 @@ def generate_learned_scene(prompt,output,size,views,seed,room_size=None,resume=F
         print('WorldGS stage: '+stage,flush=True)
     try:
         status('planning')
+        if image_room:
+            status('whole_room_image_and_completion')
+            from .image_room import prepare_image_room
+            prepare_image_room(prompt,folder,size,seed,room_size,planner_model,front_image)
         plan_file=folder/'planning/scene_plan.json'
         if plan_file.exists():
             plan=normalize_size_locks(json.loads(plan_file.read_text()),prompt)
@@ -305,7 +312,7 @@ def generate_learned_scene(prompt,output,size,views,seed,room_size=None,resume=F
         else:
             options=dict(model_id=planner_model) if planner_model else {}
             plan=plan_with_llm(prompt,folder/'planning',room_size,**options)
-        status('object_images',objects=len(plan['objects']))
+        status('scene_image_crops' if image_room else 'object_images',objects=len(plan['objects']))
         generate_images(plan,folder,seed)
         job=dict(seed=seed,objects=[dict(id=o['id'],label=o['label'],folder=str(folder/'assets'/o['id']),instance_of=o.get('asset_instance_of')) for o in plan['objects']])
         (folder/'asset_job.json').write_text(json.dumps(job,indent=2))
@@ -319,6 +326,10 @@ def generate_learned_scene(prompt,output,size,views,seed,room_size=None,resume=F
                     run_worker([segment,worker,'segment',folder/'asset_job.json','--root',root],folder/'logs/segment.log',backend_environment(segment,environment))
                     break
                 except RuntimeError:
+                    if image_room:
+                        # Preserve scene-image identity. Never silently replace
+                        # a failed crop with a separately generated object.
+                        raise
                     match=re.search(r'Could not isolate ([a-z][a-z0-9_]*):',(folder/'logs/segment.log').read_text())
                     if match is None or attempt==6:
                         raise
@@ -345,6 +356,10 @@ def generate_learned_scene(prompt,output,size,views,seed,room_size=None,resume=F
         from .learned_references import save_references
         status('reference_validation')
         result=save_references(folder,prompt,seed,size,mesh,components,owners,render_job)
+        if image_room:
+            result.update(mode='image_room_mesh_v12',generation_source='image_room_provenance.json',
+                          input_image='source_front.png',proposal_images_are_training_targets=False)
+            (folder/'scene.json').write_text(json.dumps(result,indent=2))
         (folder/'status.json').write_text(json.dumps(dict(stage='references_ready',success=True),indent=2))
         return result
     except Exception as error:

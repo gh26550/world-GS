@@ -256,8 +256,8 @@ class LearnedSceneTest(unittest.TestCase):
             run_worker([sys.executable,'-c','print("Reconstructed verified")'],log)
             self.assertTrue((Path(folder)/'worker.attempt_01.log').exists())
 
-    def test_default_cli_uses_learned_generation(self):
+    def test_default_cli_uses_whole_room_image_generation(self):
         from worldgs.cli import main
         with patch('sys.argv',['worldgs','generate','--prompt','a bedroom','--output','unused']),patch('worldgs.pipeline.generate') as generation:
             main()
-        self.assertEqual(generation.call_args.kwargs['mode'],'learned')
+        self.assertEqual(generation.call_args.kwargs['mode'],'image-room')

@@ -263,7 +263,7 @@ def repair_layout(plan):
     return plan
 
 
-def plan_with_llm(prompt, output, room_size=None, model_id=MODEL):
+def plan_with_llm(prompt, output, room_size=None, model_id=MODEL, visual_observation=None):
     import torch
     from transformers import AutoTokenizer,AutoModelForCausalLM
     output = Path(output)
@@ -277,6 +277,12 @@ def plan_with_llm(prompt, output, room_size=None, model_id=MODEL):
             generated = model.generate(**encoded,max_new_tokens=limit,do_sample=False,pad_token_id=tokenizer.eos_token_id)
         return tokenizer.decode(generated[0,encoded['input_ids'].shape[1]:],skip_special_tokens=True)
     instruction = prompt+(f'\nUse room size {list(room_size)}.' if room_size else '')
+    if visual_observation:
+        instruction += ('\nReference-image observation (data, NOT extra requested objects): '+json.dumps(visual_observation)+
+            '\nUse it for palette and relative arrangement. Original prompt determines required object counts. '
+            'Plan side/rear regions for objects absent from front. Do not add unrequested props from the observation. '
+            'Window is architecture only, never a relation subject or furniture support. '
+            'Every floor-standing object has support="floor". Leave relations empty unless the original request requires one.')
     messages = [dict(role='system',content=SYSTEM),dict(role='user',content=instruction)]
     history=[]
     offset=len(list(output.glob('planner_*.txt')))

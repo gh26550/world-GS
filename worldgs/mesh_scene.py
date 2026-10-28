@@ -231,6 +231,17 @@ def teacher_camera_set(layout, views=24):
                 candidates = [middle+np.array([radius*f*np.sin(angle), height, radius*f*np.cos(angle)]) for f in [.65, .3, 0.]]
                 eye = next((p for p in candidates if safe(p)), None)
             if eye is None:
+                # Deep/sectional learned furniture can block the entire
+                # central radial path while leaving safe translated positions
+                # elsewhere. Keep yaw/pitch coverage, move the camera instead
+                # of deforming the mesh or declaring this valid room unusable.
+                intended=middle+np.array([radius*np.sin(angle),height,radius*np.cos(angle)])
+                candidates=[np.array([x,middle[1]+height,z])
+                            for x in np.linspace(lo[0]+.25,hi[0]-.25,9)
+                            for z in np.linspace(lo[2]+.25,hi[2]-.25,9)]
+                candidates=[p for p in candidates if safe(p)]
+                eye=min(candidates,key=lambda p:np.linalg.norm(p-intended)) if candidates else None
+            if eye is None:
                 raise ValueError(f'No safe camera for yaw={yaw}, pitch={pitch}; edit layout')
             result.append((f'room_yaw_{yaw:g}_pitch_{pitch:g}', pose_at(yaw, pitch, eye)))
     # Include views around each object to expose sides and accessible backs.
