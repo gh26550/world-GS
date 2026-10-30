@@ -15,6 +15,10 @@ from .ply import FULL_FIELDS, write_gaussian_ply
 def validate_teacher(path):
     path = Path(path)
     meta = json.loads((path/'scene.json').read_text())
+    from .front_alignment import validate_front_audit
+    validate_front_audit(path,meta)
+    from .appearance import validate_appearance
+    validate_appearance(path,meta)
     if hashlib.sha256((path/'scene_mesh.glb').read_bytes()).hexdigest() != meta['mesh_file_sha256']:
         raise ValueError('Exported teacher mesh changed; regenerate references before training')
     geometry = np.load(path/'mesh_geometry.npz')
@@ -42,7 +46,7 @@ def validate_teacher(path):
         face_ids = np.load(path/frame['face_file'])
         if not mask.any() or not np.isfinite(depth[mask]).all() or (depth[mask] <= 0).any() or (face_ids[mask] < 0).any() or (face_ids[mask] >= len(faces)).any():
             raise ValueError('Invalid mesh reference depth or triangle IDs')
-        xyz = lift(depth, np.asarray(meta['K']), np.asarray(frame['transform_matrix']))
+        xyz = lift(depth, np.asarray(frame.get('K',meta['K'])), np.asarray(frame['transform_matrix']))
         ids = face_ids[mask]
         residual = np.abs(((xyz[mask]-triangles[ids, 0])*normals[ids]).sum(1))
         if residual.max() > 1e-5:

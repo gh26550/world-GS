@@ -91,7 +91,7 @@ def object_bounds(obj, height):
     return center-extent/2,center+extent/2
 
 
-def validate_plan(plan):
+def validate_plan(plan, *, check_overlap=True):
     schema={'style':str,'room':dict,'objects':list,'requirements':list,'relations':list,
             'lighting':dict,'assumptions':list,'unsupported':list}
     for key,kind in schema.items():
@@ -108,6 +108,9 @@ def validate_plan(plan):
     from .window_geometry import window_bounds
     window_bounds(plan['room'])
     objects = plan['objects']
+    eye=np.asarray(plan.get('reference_camera',{}).get('eye',[0.,0.,0.]),float)
+    if eye.shape!=(3,) or not np.isfinite(eye).all() or (np.abs(eye)>=size/2).any():
+        raise ValueError('Invalid reference camera position')
     if not isinstance(objects,list) or not 1 <= len(objects) <= 24:
         raise ValueError('Scene needs 1–24 explicit object instances')
     resolve_supports(plan)
@@ -126,10 +129,10 @@ def validate_plan(plan):
         lo,hi = object_bounds(obj,size[1])
         if (lo < -size/2-.001).any() or (hi > size/2+.001).any():
             raise ValueError('Object outside room: '+name)
-        if (lo < .2).all() and (hi > -.2).all():
+        if (lo < eye+.2).all() and (hi > eye-.2).all():
             raise ValueError('Object encloses front camera: '+name)
         for other,(a,b) in bounds.items():
-            if (np.minimum(hi,b)-np.maximum(lo,a) > .02).all():
+            if check_overlap and (np.minimum(hi,b)-np.maximum(lo,a) > .02).all():
                 raise ValueError('Object collision: '+name+' / '+other)
         bounds[name] = lo,hi
     for obj in objects:

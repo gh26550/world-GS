@@ -97,13 +97,14 @@ def train_mesh(path, steps, max_points):
     matte_mask,anchor_colors=None,None
     last_anchor_step = -100
     degree = 0
-    def render(view):
+    def render(view, camera_K=None):
         shN=parameters['shN']
         if matte_mask is not None:
             shN=shN*(~matte_mask)[:,None,None]
         return rasterization(means=parameters['means'], quats=parameters['quats'], scales=parameters['scales'].exp(),
             opacities=parameters['opacities'].sigmoid(), colors=torch.cat([parameters['sh0'], shN], 1),
-            sh_degree=degree, viewmats=view, Ks=K, width=size, height=size, packed=False, absgrad=True, render_mode='RGB+ED')
+            sh_degree=degree, viewmats=view, Ks=K if camera_K is None else camera_K, width=size, height=size, packed=False, absgrad=True, render_mode='RGB+ED')
+    point_budget=300000 if meta.get('appearance_audit') else 180000
     log = []
     for step in range(steps):
         degree = min(3, step//300)
@@ -116,7 +117,7 @@ def train_mesh(path, steps, max_points):
                 anchor_colors=t((source['rgb'][nearest]/255-.5)/.28209479177387814)
             last_anchor_step = step
         i = step % len(frames)
-        rendered, alpha, info = render(poses[i])
+        rendered, alpha, info = render(poses[i], t(frames[i].get('K',meta['K']))[None])
         valid = masks[i]
         weight = confidences[i][valid]
         rgb_loss = confidence_loss((rendered[0, ..., :3][valid]-targets[i][0][valid]).abs().mean(-1), weight)
@@ -162,16 +163,16 @@ def train_mesh(path, steps, max_points):
             anchors = None
         with torch.no_grad():
             parameters['scales'].clamp_(np.log(.0015), np.log(.25))
-        if len(parameters['means']) > 180000:
+        if len(parameters['means']) > point_budget:
             with torch.no_grad():
                 if coverage_mode:
-                    drop = coverage_drop_mask(parameters['means'], parameters['opacities'], 180000)
+                    drop = coverage_drop_mask(parameters['means'], parameters['opacities'], point_budget)
                 else:
-                    top = parameters['opacities'].topk(180000).indices
+                    top = parameters['opacities'].topk(point_budget).indices
                     drop = torch.ones(len(parameters['means']), device='cuda', dtype=torch.bool)
                     drop[top] = False
                 remove(parameters, optimizers, state, drop)
-            strategy.refine_stop_iter = step
+            # Continue spatial redistribution through the scheduled refinement period.
         if step % 100 == 0 or step == steps-1:
             record = {'step': step, 'points': len(parameters['means']), 'rgb_l1': float(rgb_loss.detach()), 'depth_log_l1': float(depth_loss.detach()), 'coverage_loss': float(coverage_loss.detach()), 'soft_mesh_penalty': float(prior.detach()), 'sh_degree': degree}
             log.append(record)
@@ -191,12 +192,12 @@ def train_mesh(path, steps, max_points):
     np.savez_compressed(path/'gaussians.npz', **{key: cpu(value) for key, value in parameters.items()})
     evaluation = []
     with torch.inference_mode():
-        front_result,_,_=render(poses[0])
+        front_result,_,_=render(poses[0], t(frames[0].get('K',meta['K']))[None])
     Image.fromarray(np.uint8(np.clip(cpu(front_result[0,...,:3]),0,1)*255)).save(path/'front_render.png')
     previews = []
     for i, frame in enumerate(meta['heldout_frames']):
         with torch.no_grad():
-            result, alpha, _ = render(torch.linalg.inv(t(frame['transform_matrix']))[None])
+            result, alpha, _ = render(torch.linalg.inv(t(frame['transform_matrix']))[None], t(frame.get('K',meta['K']))[None])
         predicted = cpu(result[0, ..., :3])
         target = np.asarray(Image.open(path/frame['file_path']))/255
         depth = np.load(path/frame['depth_file'])
@@ -219,12 +220,34 @@ def train_mesh(path, steps, max_points):
         canvas.paste(prediction.resize((256, 256)), (x, y+256))
     canvas.save(path/'heldout_preview.png')
     nearest = tree.query(means, workers=2)[0]
-    training = {'trainer': meta['mode'] if prompt_mesh else ('coverage_3dgs_v7' if coverage_mode else 'fused_tsdf_3dgs_v6' if meta.get('mode') == 'global_tsdf_v6' else 'generated_rgbd_3dgs_v5' if meta.get('mode') == 'progressive_rgbd_v5' else 'generated_rgbd_3dgs_v4') if expanded else 'free_3dgs_mesh_references_v3', 'steps': steps, 'initial_points': n, 'final_points': len(means),
+    training = {'reference_source':meta.get('reference_source'),'trainer': meta['mode'] if prompt_mesh else ('coverage_3dgs_v7' if coverage_mode else 'fused_tsdf_3dgs_v6' if meta.get('mode') == 'global_tsdf_v6' else 'generated_rgbd_3dgs_v5' if meta.get('mode') == 'progressive_rgbd_v5' else 'generated_rgbd_3dgs_v4') if expanded else 'free_3dgs_mesh_references_v3', 'steps': steps, 'initial_points': n, 'final_points': len(means),
         'coverage_loss_weight': .05 if coverage_mode else 0., 'spatially_stratified_sampling': coverage_mode, 'spatial_budget_pruning': coverage_mode,
         'mesh_prior_weight': .3 if prompt_mesh else 0. if expanded else .1, 'depth_weight_schedule': [.2, .2] if prompt_mesh else [.1, .02] if expanded else [.1, .1],
         'trainable': list(parameters.keys()), 'hard_projection': False, 'densification': True, 'sh_degree': degree,
         'matte_room_components':matte_components,'matte_room_sh_degree':0 if matte_components else None,
         'nearest_source_distance_median': float(np.median(nearest)), 'nearest_source_distance_p95': float(np.quantile(nearest, .95)), 'log': log}
     (path/'training.json').write_text(json.dumps(training, indent=2), encoding='utf-8')
-    (path/'evaluation.json').write_text(json.dumps({'reference': 'heldout physically rendered UV-mesh views; not independent real-world ground truth' if learned_mode else 'heldout shared photographic surface renders on the same prompt mesh; not independent ground truth' if prompt_mesh else 'heldout updated generated RGBD geometry renders; not independent ground truth' if expanded else 'heldout triangle mesh renders; not real-world ground truth', 'frames': evaluation}, indent=2), encoding='utf-8')
+    (path/'evaluation.json').write_text(json.dumps({'reference': 'heldout mesh-conditioned synthesized photographs; not captured or independent real-world ground truth' if meta.get('appearance_audit') else 'heldout physically rendered UV-mesh views; not independent real-world ground truth' if learned_mode else 'heldout shared photographic surface renders on the same prompt mesh; not independent ground truth' if prompt_mesh else 'heldout updated generated RGBD geometry renders; not independent ground truth' if expanded else 'heldout triangle mesh renders; not real-world ground truth', 'frames': evaluation}, indent=2), encoding='utf-8')
+    holes=[r['alpha_below_half_on_target'] for r in evaluation]
+    probe_results=[]
+    for i,frame in enumerate(meta.get('coverage_probe_frames',[])):
+        with torch.inference_mode():
+            _,alpha,_=render(torch.linalg.inv(t(frame['transform_matrix']))[None],t(frame.get('K',meta['K']))[None])
+        mask=np.load(path/frame['mask_file'])
+        fraction=float(((cpu(alpha[0,...,0])<.5)&mask).sum()/max(mask.sum(),1))
+        probe_results.append(dict(camera=i,target=frame['target'],alpha_below_half_on_target=fraction))
+    if probe_results:
+        (path/'all_view_coverage.json').write_text(json.dumps({'scope':'all planned cameras, including rejected RGB references; coverage only',
+            'frames':probe_results},indent=2))
+        holes=[r['alpha_below_half_on_target'] for r in probe_results]
+    quality={'reference':'all planned mesh cameras' if probe_results else 'mesh teacher coverage, not independent ground truth',
+             'coverage_camera_count':len(holes),
+             'mean_missing_fraction':float(np.mean(holes)) if holes else None,
+             'max_missing_fraction':float(np.max(holes)) if holes else None,
+             'criteria':{'mean_missing_fraction_max':.01,'max_missing_fraction_max':.05},
+             'passed':bool(holes) and float(np.mean(holes))<=.01 and float(np.max(holes))<=.05}
+    (path/'gs_coverage_quality.json').write_text(json.dumps(quality,indent=2))
+    (path/'status.json').write_text(json.dumps({'stage':'training_complete' if quality['passed'] else 'training_quality_failed',
+                                               'success':quality['passed'],'coverage':quality},indent=2))
+    print(json.dumps(quality),flush=True)
     print(f'Saved {len(means)} freely optimized Gaussians; SH degree {degree}', flush=True)

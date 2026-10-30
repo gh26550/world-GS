@@ -32,8 +32,10 @@ class ImageRoomTest(unittest.TestCase):
             self.assertFalse(((eye>lo-.1)&(eye<hi+.1)).all())
 
     def test_default_routes_to_image_first_without_object_generation(self):
-        with patch('worldgs.learned_scene.generate_learned_scene',return_value='ok') as backend:
+        with patch('worldgs.learned_scene.generate_learned_scene',return_value='mesh') as backend,patch('worldgs.appearance.synthesize_appearance',return_value='ok') as appearance:
             self.assertEqual(generate('room','out'),'ok')
+            self.assertEqual(backend.call_args.args[1],Path('out_scaffold'))
+            appearance.assert_called_once_with(Path('out_scaffold'),'out',size=512,resume=False)
             self.assertTrue(backend.call_args.kwargs['image_room'])
 
     def test_new_mode_uses_validated_mesh_trainer(self):

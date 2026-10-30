@@ -21,7 +21,8 @@ def save_references(folder,prompt,seed,size,mesh,components,owners,job):
         frame=source.copy()
         split=frame.pop('split')
         stem=Path(frame['file_path']).stem
-        hit=renderer.render(K,np.asarray(frame['transform_matrix']),size)
+        frame['K']=source.get('K',job['K'])
+        hit=renderer.render(np.asarray(frame['K']),np.asarray(frame['transform_matrix']),size)
         valid=hit['faces']>=0
         for field,data in [('depth',hit['depth']),('mask',valid),('normals',hit['normals'].astype(np.float32)),('faces',hit['faces'])]:
             filename=f'{stem}_{field}.npy'
@@ -61,6 +62,7 @@ def save_references(folder,prompt,seed,size,mesh,components,owners,job):
     points=sample_teacher_surface(mesh,renderer,owners,visible,seed=seed,component_fraction=.35)
     scores=np.zeros(len(points['xyz']))
     for frame in frames:
+        K=np.asarray(frame.get('K',job['K']))
         pose=np.asarray(frame['transform_matrix'])
         camera=(points['xyz']-pose[:3,3])@pose[:3,:3]
         uvh=camera@K.T
@@ -83,6 +85,8 @@ def save_references(folder,prompt,seed,size,mesh,components,owners,job):
         x,y=uv[ids].T
         points['rgb'][ids]=np.asarray(Image.open(folder/frame['file_path']).convert('RGB'))[y,x]
         scores[ids]=weight[better]
+    coverage['unobserved_seed_fraction']=float((scores==0).mean())
+    coverage['unobserved_seed_count']=int((scores==0).sum())
     keep=scores>0
     points={name:value[keep] for name,value in points.items()}
     coverage['seed_counts']={c['name']:int((points['component_ids']==i).sum()) for i,c in enumerate(components)}
@@ -94,7 +98,7 @@ def save_references(folder,prompt,seed,size,mesh,components,owners,job):
     (folder/'structure_quality.json').write_text(json.dumps(quality,indent=2))
     if not quality['passed']:
         raise ValueError('Assembled room/seed geometry failed checks')
-    meta=dict(mode='learned_mesh_v10',prompt=prompt,seed=seed,demo=False,size=size,K=K.tolist(),frames=frames,heldout_frames=heldout,
+    meta=dict(mode='learned_mesh_v10',prompt=prompt,seed=seed,demo=False,size=size,K=job['K'],frames=frames,heldout_frames=heldout,
         geometry_constraint='soft_mesh_structure_prior',convention='OpenCV camera-to-world, x right y down z forward',
         mesh_digest=mesh_digest(mesh.vertices,mesh.faces),mesh_file_sha256=hashlib.sha256((folder/'scene_mesh.glb').read_bytes()).hexdigest(),
         point_count=len(points['xyz']),mesh_triangles=len(mesh.faces),mesh_components=len(components),

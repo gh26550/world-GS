@@ -260,4 +260,4 @@ class LearnedSceneTest(unittest.TestCase):
         from worldgs.cli import main
         with patch('sys.argv',['worldgs','generate','--prompt','a bedroom','--output','unused']),patch('worldgs.pipeline.generate') as generation:
             main()
-        self.assertEqual(generation.call_args.kwargs['mode'],'image-room')
+        self.assertEqual(generation.call_args.kwargs['mode'],'photo-room')
