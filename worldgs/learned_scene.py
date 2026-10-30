@@ -306,7 +306,7 @@ def generate_learned_scene(prompt,output,size,views,seed,room_size=None,resume=F
     config=dict(prompt=prompt,size=size,views=views,seed=seed,room_size=list(room_size) if room_size else None,planner_model=planner_model)
     if image_room:
         from .image_room import image_digest
-        config.update(mode='image-room',geometry_pipeline_version=13,front_image_sha256=image_digest(front_image) if front_image else None)
+        config.update(mode='image-room',geometry_pipeline_version=14,front_image_sha256=image_digest(front_image) if front_image else None)
     folder.mkdir(parents=True,exist_ok=True)
     manifest=folder/'request.json'
     if any(folder.iterdir()):
@@ -373,7 +373,12 @@ def generate_learned_scene(prompt,output,size,views,seed,room_size=None,resume=F
             prefix='heldout' if i%5==2 and not target.startswith('structure_') else 'view'
             index=sum(f['split']==prefix for f in frames)
             frames.append(dict(file_path=f'{prefix}_{index:03d}.png',split=prefix,target=target,transform_matrix=pose.tolist()))
-        render_job=dict(folder=str(folder),size=size,K=plan.get('reference_intrinsics',intrinsics(size).tolist()),frames=frames,plan=plan)
+        from .reference_coverage import protect_training_coverage
+        for frame in frames:
+            frame['K']=plan['reference_intrinsics'] if frame['target']=='front' and plan.get('reference_intrinsics') else intrinsics(size).tolist()
+        coverage=protect_training_coverage(mesh,components,owners,frames,size)
+        (folder/'reference_coverage.json').write_text(json.dumps(coverage,indent=2))
+        render_job=dict(folder=str(folder),size=size,K=intrinsics(size).tolist(),frames=frames,plan=plan)
         (folder/'render_job.json').write_text(json.dumps(render_job,indent=2))
         status('physical_references',cameras=len(frames))
         run_worker([blender,'-b','--python',Path(__file__).with_name('physical_render.py'),'--',folder/'render_job.json'],folder/'logs/render.log')

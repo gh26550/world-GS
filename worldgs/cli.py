@@ -29,6 +29,9 @@ def main():
     refit=sub.add_parser('refit-front',help='Fit source-image camera and meshes into a separate run, then rebuild GS references')
     refit.add_argument('path')
     refit.add_argument('--output',required=True)
+    refs=sub.add_parser('repair-references',help='Rebuild coverage-checked references in a separate run, preserving mesh geometry')
+    refs.add_argument('path')
+    refs.add_argument('--output',required=True)
     repair = sub.add_parser('refine-depth', help='Re-estimate depth and rebuild seams using existing expand keyframe images')
     repair.add_argument('path')
     repair.add_argument('--output', required=True)
@@ -60,6 +63,9 @@ def main():
     elif command == 'refit-front':
         from .front_alignment import refit_scene
         refit_scene(**args)
+    elif command == 'repair-references':
+        from .repair_references import repair_references
+        repair_references(**args)
     elif command == 'refine-depth':
         from .expansion import repair_depth_scene
         repair_depth_scene(**args)

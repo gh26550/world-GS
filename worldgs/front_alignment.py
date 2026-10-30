@@ -247,7 +247,7 @@ def audit_front(folder):
     mesh=trimesh.Trimesh(geometry['vertices'],geometry['faces'],process=False)
     owners=geometry['owners']
     pose=np.asarray(meta['frames'][0]['transform_matrix'])
-    hit=MeshRenderer(mesh,layout['components'],owners).render(np.asarray(meta['K']),pose,meta['size'])
+    hit=MeshRenderer(mesh,layout['components'],owners).render(np.asarray(meta['frames'][0].get('K',meta['K'])),pose,meta['size'])
     visible=hit['faces']>=0
     owner_image=np.full(visible.shape,-1,int)
     owner_image[visible]=owners[hit['faces'][visible]]
@@ -273,7 +273,7 @@ def audit_front(folder):
 
 
 def projection_fingerprint(meta):
-    record=dict(K=meta['K'],camera=meta['frames'][0]['transform_matrix'],mesh_digest=meta['mesh_digest'])
+    record=dict(K=meta['frames'][0].get('K',meta['K']),camera=meta['frames'][0]['transform_matrix'],mesh_digest=meta['mesh_digest'])
     return hashlib.sha256(json.dumps(record,sort_keys=True).encode()).hexdigest()
 
 
@@ -317,7 +317,7 @@ def refit_scene(path, output):
         shutil.copytree(source/name,target/name)
     for name in ('source_front.png','image_room_provenance.json'):
         shutil.copy2(source/name,target/name)
-    config['geometry_pipeline_version']=13
+    config['geometry_pipeline_version']=14
     if config.get('front_image_sha256'):
         # The supplied original may have been a JPEG or a non-square image.
         # This replay uses the saved canonical PNG, not the now-unneeded file.

@@ -97,13 +97,13 @@ def train_mesh(path, steps, max_points):
     matte_mask,anchor_colors=None,None
     last_anchor_step = -100
     degree = 0
-    def render(view):
+    def render(view, camera_K=None):
         shN=parameters['shN']
         if matte_mask is not None:
             shN=shN*(~matte_mask)[:,None,None]
         return rasterization(means=parameters['means'], quats=parameters['quats'], scales=parameters['scales'].exp(),
             opacities=parameters['opacities'].sigmoid(), colors=torch.cat([parameters['sh0'], shN], 1),
-            sh_degree=degree, viewmats=view, Ks=K, width=size, height=size, packed=False, absgrad=True, render_mode='RGB+ED')
+            sh_degree=degree, viewmats=view, Ks=K if camera_K is None else camera_K, width=size, height=size, packed=False, absgrad=True, render_mode='RGB+ED')
     log = []
     for step in range(steps):
         degree = min(3, step//300)
@@ -116,7 +116,7 @@ def train_mesh(path, steps, max_points):
                 anchor_colors=t((source['rgb'][nearest]/255-.5)/.28209479177387814)
             last_anchor_step = step
         i = step % len(frames)
-        rendered, alpha, info = render(poses[i])
+        rendered, alpha, info = render(poses[i], t(frames[i].get('K',meta['K']))[None])
         valid = masks[i]
         weight = confidences[i][valid]
         rgb_loss = confidence_loss((rendered[0, ..., :3][valid]-targets[i][0][valid]).abs().mean(-1), weight)
@@ -171,7 +171,7 @@ def train_mesh(path, steps, max_points):
                     drop = torch.ones(len(parameters['means']), device='cuda', dtype=torch.bool)
                     drop[top] = False
                 remove(parameters, optimizers, state, drop)
-            strategy.refine_stop_iter = step
+            # Continue spatial redistribution through the scheduled refinement period.
         if step % 100 == 0 or step == steps-1:
             record = {'step': step, 'points': len(parameters['means']), 'rgb_l1': float(rgb_loss.detach()), 'depth_log_l1': float(depth_loss.detach()), 'coverage_loss': float(coverage_loss.detach()), 'soft_mesh_penalty': float(prior.detach()), 'sh_degree': degree}
             log.append(record)
@@ -191,12 +191,12 @@ def train_mesh(path, steps, max_points):
     np.savez_compressed(path/'gaussians.npz', **{key: cpu(value) for key, value in parameters.items()})
     evaluation = []
     with torch.inference_mode():
-        front_result,_,_=render(poses[0])
+        front_result,_,_=render(poses[0], t(frames[0].get('K',meta['K']))[None])
     Image.fromarray(np.uint8(np.clip(cpu(front_result[0,...,:3]),0,1)*255)).save(path/'front_render.png')
     previews = []
     for i, frame in enumerate(meta['heldout_frames']):
         with torch.no_grad():
-            result, alpha, _ = render(torch.linalg.inv(t(frame['transform_matrix']))[None])
+            result, alpha, _ = render(torch.linalg.inv(t(frame['transform_matrix']))[None], t(frame.get('K',meta['K']))[None])
         predicted = cpu(result[0, ..., :3])
         target = np.asarray(Image.open(path/frame['file_path']))/255
         depth = np.load(path/frame['depth_file'])
@@ -227,4 +227,14 @@ def train_mesh(path, steps, max_points):
         'nearest_source_distance_median': float(np.median(nearest)), 'nearest_source_distance_p95': float(np.quantile(nearest, .95)), 'log': log}
     (path/'training.json').write_text(json.dumps(training, indent=2), encoding='utf-8')
     (path/'evaluation.json').write_text(json.dumps({'reference': 'heldout physically rendered UV-mesh views; not independent real-world ground truth' if learned_mode else 'heldout shared photographic surface renders on the same prompt mesh; not independent ground truth' if prompt_mesh else 'heldout updated generated RGBD geometry renders; not independent ground truth' if expanded else 'heldout triangle mesh renders; not real-world ground truth', 'frames': evaluation}, indent=2), encoding='utf-8')
+    holes=[r['alpha_below_half_on_target'] for r in evaluation]
+    quality={'reference':'mesh teacher coverage, not independent ground truth',
+             'mean_missing_fraction':float(np.mean(holes)) if holes else None,
+             'max_missing_fraction':float(np.max(holes)) if holes else None,
+             'criteria':{'mean_missing_fraction_max':.01,'max_missing_fraction_max':.05},
+             'passed':bool(holes) and float(np.mean(holes))<=.01 and float(np.max(holes))<=.05}
+    (path/'gs_coverage_quality.json').write_text(json.dumps(quality,indent=2))
+    (path/'status.json').write_text(json.dumps({'stage':'training_complete' if quality['passed'] else 'training_quality_failed',
+                                               'success':quality['passed'],'coverage':quality},indent=2))
+    print(json.dumps(quality),flush=True)
     print(f'Saved {len(means)} freely optimized Gaussians; SH degree {degree}', flush=True)

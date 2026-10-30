@@ -44,7 +44,7 @@ def validate_teacher(path):
         face_ids = np.load(path/frame['face_file'])
         if not mask.any() or not np.isfinite(depth[mask]).all() or (depth[mask] <= 0).any() or (face_ids[mask] < 0).any() or (face_ids[mask] >= len(faces)).any():
             raise ValueError('Invalid mesh reference depth or triangle IDs')
-        xyz = lift(depth, np.asarray(meta['K']), np.asarray(frame['transform_matrix']))
+        xyz = lift(depth, np.asarray(frame.get('K',meta['K'])), np.asarray(frame['transform_matrix']))
         ids = face_ids[mask]
         residual = np.abs(((xyz[mask]-triangles[ids, 0])*normals[ids]).sum(1))
         if residual.max() > 1e-5:
