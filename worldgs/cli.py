@@ -26,6 +26,9 @@ def main():
     train.add_argument('path')
     train.add_argument('--steps', type=int, default=1000)
     train.add_argument('--max-points', type=int, default=100000)
+    refit=sub.add_parser('refit-front',help='Fit source-image camera and meshes into a separate run, then rebuild GS references')
+    refit.add_argument('path')
+    refit.add_argument('--output',required=True)
     repair = sub.add_parser('refine-depth', help='Re-estimate depth and rebuild seams using existing expand keyframe images')
     repair.add_argument('path')
     repair.add_argument('--output', required=True)
@@ -54,6 +57,9 @@ def main():
     elif command == 'generate':
         from .pipeline import generate
         generate(**args)
+    elif command == 'refit-front':
+        from .front_alignment import refit_scene
+        refit_scene(**args)
     elif command == 'refine-depth':
         from .expansion import repair_depth_scene
         repair_depth_scene(**args)

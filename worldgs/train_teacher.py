@@ -15,6 +15,8 @@ from .ply import FULL_FIELDS, write_gaussian_ply
 def validate_teacher(path):
     path = Path(path)
     meta = json.loads((path/'scene.json').read_text())
+    from .front_alignment import validate_front_audit
+    validate_front_audit(path,meta)
     if hashlib.sha256((path/'scene_mesh.glb').read_bytes()).hexdigest() != meta['mesh_file_sha256']:
         raise ValueError('Exported teacher mesh changed; regenerate references before training')
     geometry = np.load(path/'mesh_geometry.npz')
