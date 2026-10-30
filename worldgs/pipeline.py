@@ -170,7 +170,15 @@ def generate_legacy(prompt, output, size=512, views=24, seed=0, demo=False):
     return metadata
 
 
-def generate(prompt, output, size=512, views=24, seed=0, demo=False, mode='image-room', front_image=None, room_size=None, layout_file=None, resume=False, planner_model=None):
+def generate(prompt, output, size=512, views=24, seed=0, demo=False, mode='photo-room', front_image=None, room_size=None, layout_file=None, resume=False, planner_model=None):
+    if mode == 'photo-room':
+        if demo or layout_file:
+            raise ValueError('photo-room requires real image and mesh generation')
+        from .learned_scene import generate_learned_scene
+        from .appearance import synthesize_appearance
+        scaffold=Path(output).with_name(Path(output).name+'_scaffold')
+        generate_learned_scene(prompt,scaffold,size,views,seed,room_size,resume,planner_model,image_room=True,front_image=front_image)
+        return synthesize_appearance(scaffold,output,size=size,resume=resume)
     if mode == 'image-room':
         if demo or layout_file:
             raise ValueError('image-room requires real room images; demo/layout overrides are not supported')

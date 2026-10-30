@@ -16,7 +16,7 @@ def main():
     generate.add_argument('--views', type=int, default=24)
     generate.add_argument('--seed', type=int, default=0)
     generate.add_argument('--demo', action='store_true', help='Synthetic integration fixture; does not generate images from the prompt')
-    generate.add_argument('--mode', choices=['image-room', 'learned', 'scene', 'expand', 'mesh', 'room', 'legacy'], default='image-room', help='image-room starts from a whole-room front image; learned retains independent object image generation')
+    generate.add_argument('--mode', choices=['photo-room', 'image-room', 'learned', 'scene', 'expand', 'mesh', 'room', 'legacy'], default='photo-room', help='photo-room adds mesh-conditioned photographic references; image-room starts from a whole-room front image; learned retains independent object image generation')
     generate.add_argument('--resume',action='store_true',help='Resume an identical image-room/learned request from completed stages')
     generate.add_argument('--planner-model',help='Qwen2.5-VL model for image-room, or causal model for learned')
     generate.add_argument('--layout-file', help='Editable saved layout.json; mesh mode only, bypasses depth estimation and detection')
@@ -32,6 +32,12 @@ def main():
     refs=sub.add_parser('repair-references',help='Rebuild coverage-checked references in a separate run, preserving mesh geometry')
     refs.add_argument('path')
     refs.add_argument('--output',required=True)
+    photo=sub.add_parser('synthesize-appearance',help='Generate mesh-conditioned photographic references in a separate run')
+    photo.add_argument('path')
+    photo.add_argument('--output',required=True)
+    photo.add_argument('--size',type=int,default=512)
+    photo.add_argument('--pilot-views',type=int)
+    photo.add_argument('--resume',action='store_true')
     repair = sub.add_parser('refine-depth', help='Re-estimate depth and rebuild seams using existing expand keyframe images')
     repair.add_argument('path')
     repair.add_argument('--output', required=True)
@@ -66,6 +72,9 @@ def main():
     elif command == 'repair-references':
         from .repair_references import repair_references
         repair_references(**args)
+    elif command == 'synthesize-appearance':
+        from .appearance import synthesize_appearance
+        synthesize_appearance(**args)
     elif command == 'refine-depth':
         from .expansion import repair_depth_scene
         repair_depth_scene(**args)

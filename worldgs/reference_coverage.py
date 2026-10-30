@@ -27,7 +27,7 @@ def observed(points, frames, hits, original_size, size):
     return covered
 
 
-def protect_training_coverage(mesh,components,owners,frames,original_size,size=64,max_missing=.01):
+def protect_training_coverage(mesh,components,owners,frames,original_size,size=64,max_missing=.01,rename_files=True):
     renderer=MeshRenderer(mesh,components,owners)
     hits=[renderer.render(scaled_intrinsics(f['K'],original_size,size),np.asarray(f['transform_matrix']),size) for f in frames]
     report={'resolution':size,'max_missing_fraction':max_missing,'promoted':[],
@@ -45,10 +45,27 @@ def protect_training_coverage(mesh,components,owners,frames,original_size,size=6
         if missing>max_missing:
             report['promoted'].append({'target':frame['target'],'missing_fraction':missing})
             frame['split']='view'
-    for split in ('view','heldout'):
-        for index,frame in enumerate(f for f in frames if f['split']==split):frame['file_path']=f'{split}_{index:03d}.png'
+    if rename_files:
+        for split in ('view','heldout'):
+            for index,frame in enumerate(f for f in frames if f['split']==split):frame['file_path']=f'{split}_{index:03d}.png'
     report['training_views']=sum(f['split']=='view' for f in frames)
     report['heldout_views']=sum(f['split']=='heldout' for f in frames)
     report['passed']=report['heldout_views']>0
     if not report['passed']:raise ValueError('No independent covered heldout views remain; add reference viewpoints')
     return report
+
+
+def audit_planned_coverage(mesh,components,owners,planned,training,original_size,size=48,max_missing=.01):
+    """Check every originally planned mesh view against accepted training cameras."""
+    renderer=MeshRenderer(mesh,components,owners)
+    hits={f['file_path']:renderer.render(scaled_intrinsics(f['K'],original_size,size),np.asarray(f['transform_matrix']),size) for f in planned}
+    train_hits=[hits[f['file_path']] for f in training];rows=[]
+    for frame in planned:
+        hit=hits[frame['file_path']];y,x=np.where(hit['faces']>=0)
+        rays=np.column_stack([x,y,np.ones(len(x))])@np.linalg.inv(scaled_intrinsics(frame['K'],original_size,size)).T
+        pose=np.asarray(frame['transform_matrix']);points=(rays*hit['depth'][y,x,None])@pose[:3,:3].T+pose[:3,3]
+        missing=float((~observed(points,training,train_hits,original_size,size)).mean()) if len(points) else 0.
+        rows.append(dict(frame=frame['file_path'],target=frame['target'],missing_fraction=missing))
+    worst=max((r['missing_fraction'] for r in rows),default=1.)
+    return dict(passed=worst<=max_missing,resolution=size,max_allowed_missing=max_missing,max_missing_fraction=worst,views=rows,
+                note='Coarse mesh visibility of all planned views; not a continuous coverage proof')
