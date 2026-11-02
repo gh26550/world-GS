@@ -45,6 +45,13 @@ def normalized_label(label):
     return label.lower().replace('bookcases','bookshelf').replace('bookshelves','bookshelf').replace('bookcase','bookshelf').replace('couch','sofa').replace('coffee table','table')
 
 
+def choose_front_detection(choices,detections,single_instance):
+    """Single instances use detector confidence; repeated instances use spatial order."""
+    if single_instance:
+        return max(choices,key=lambda i:detections[i]['score'])
+    return min(choices,key=lambda i:(detections[i]['box'][0]+detections[i]['box'][2])/2)
+
+
 def ground_completed_objects(objects, paths, seed):
     """Ground speculative objects in scene proposals, never in isolated T2I."""
     from .pipeline import Models
@@ -150,7 +157,8 @@ def plan_front(prompt, image, output, room_size, model_id):
         label = normalized_label(obj['label'])
         choices = [i for i in available if label in normalized_label(detections[i]['label'])]
         if choices:
-            index = min(choices,key=lambda i:(detections[i]['box'][0]+detections[i]['box'][2])/2)
+            count=sum(normalized_label(other['label'])==label for other in plan['objects'])
+            index = choose_front_detection(choices,detections,count==1)
             available.remove(index)
             box = np.clip(np.array(detections[index]['box'])/[image.width,image.height,image.width,image.height],0,1)
             obj.update(evidence='front',source_box=checked_box(box).tolist())

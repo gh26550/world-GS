@@ -26,3 +26,9 @@ class RoomMethodTest(unittest.TestCase):
         prompt=whole_room_prompt('A room with red chairs')
         self.assertIn('red chairs',prompt);self.assertIn('three walls',prompt)
         self.assertIn('no fisheye',prompt)
+
+    def test_single_chair_does_not_select_leftmost_low_confidence_seat(self):
+        from worldgs.image_room import choose_front_detection
+        detections=[dict(box=[0,0,10,10],score=.33),dict(box=[90,0,100,10],score=.75)]
+        self.assertEqual(choose_front_detection([0,1],detections,True),1)
+        self.assertEqual(choose_front_detection([0,1],detections,False),0)

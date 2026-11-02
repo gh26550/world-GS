@@ -306,9 +306,14 @@ def plan_with_llm(prompt, output, room_size=None, model_id=MODEL, visual_observa
                     plan['room']['size']=list(room_size)
                 plan=repair_layout(normalize_size_locks(plan,prompt))
                 validation = validate_plan(plan)
-                audit_raw = ask([dict(role='system',content='Audit scene JSON against the ORIGINAL user prompt. Return ONLY {"missing":[],"contradictions":[]}. Check requested object counts and all spatial, appearance and lighting requirements. Objects requested ON a table or shelf MUST have support set to that object ID, not floor; next_to alone does not satisfy on. Do not treat planner assumptions as user requests. Report actual omissions only.'),
+                audit_raw = ask([dict(role='system',content='Audit scene JSON against the ORIGINAL user prompt. Return ONLY {"missing":[],"contradictions":[]}. Check requested object counts and all spatial, appearance and lighting requirements. Objects requested ON a table or shelf MUST have support set to that object ID, not floor; next_to alone does not satisfy on. Do not treat planner assumptions as user requests. Report actual omissions only. An ID already present in scene.objects is NOT a missing object. The scene requirements and assumptions are planner output, NOT additional user requests. For each omission cite the exact phrase in the original prompt that requires it. If an existing object has incorrect appearance, report it under contradictions rather than missing.'),
                                  dict(role='user',content=json.dumps(dict(original_prompt=prompt,scene=plan),ensure_ascii=False))],900)
                 audit = extract_json(audit_raw)
+                existing={o['id'] for o in plan['objects']}
+                if any(isinstance(item,dict) and item.get('id') in existing for item in audit.get('missing',[])):
+                    audit_raw=ask([dict(role='system',content='Recheck an inconsistent scene audit. Return ONLY {"missing":[],"contradictions":[]}. Objects whose IDs are in scene.objects cannot be missing. Compare against original_prompt only, not planner assumptions. Retain real count, appearance or spatial violations as contradictions. Do not invent requests.'),
+                                   dict(role='user',content=json.dumps(dict(original_prompt=prompt,scene=plan,previous_audit=audit),ensure_ascii=False))],900)
+                    audit=extract_json(audit_raw)
                 if any(not isinstance(audit.get(key),list) for key in ('missing','contradictions')):
                     raise ValueError('Semantic audit did not return explicit missing/contradictions lists')
                 (output/f'audit_{attempt+offset:02d}.json').write_text(json.dumps(audit,indent=2,ensure_ascii=False),encoding='utf-8')
