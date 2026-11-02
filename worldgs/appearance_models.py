@@ -23,9 +23,26 @@ class AppearanceModels:
         self.detector=AutoModelForZeroShotObjectDetection.from_pretrained('IDEA-Research/grounding-dino-tiny').to('cuda')
         print('Appearance models ready: depth ControlNet + IP-Adapter',flush=True)
 
-    def generate(self,prompt,guide,known,depth,style,index,attempt):
+    def generate(self,prompt,guide,known,depth,style,index,attempt,regions=None):
+        if regions is None:
+            return self._sample(prompt,guide,known,depth,style,index,attempt)
+        rgb=guide.copy()
+        for n,region in enumerate(regions):
+            editable=region['mask'] & ~known
+            if not editable.any():continue
+            if region['id']=='background':
+                local_prompt='Photorealistic room architecture, floor, walls and ceiling, same room materials and lighting as reference. Empty architectural surfaces in the edited region. No furniture or additional objects.'
+                extra_negative='sofa, chair, table, bookshelf, cabinet, bed, furniture'
+            else:
+                local_prompt='Photorealistic '+region.get('description',region['label'])+'. Same materials and lighting as the reference room photograph. One existing '+region['label']+'. Keep its placement, size, orientation and camera perspective.'
+                extra_negative='additional furniture, duplicate objects'
+            rgb=self._sample(local_prompt,rgb,~editable,depth,style,index*31+n,attempt,negative_extra=extra_negative)
+        rgb[known]=guide[known]
+        return rgb
+
+    def _sample(self,prompt,guide,known,depth,style,index,attempt,negative_extra=""):
         image=self.pipe(prompt=prompt,
-            negative_prompt='illustration, cartoon, plastic toy, empty bookcase, distorted furniture, duplicate furniture, warped walls, fisheye, text, watermark',
+            negative_prompt='illustration, cartoon, plastic toy, distorted furniture, duplicate furniture, warped walls, fisheye, text, watermark, '+negative_extra,
             image=Image.fromarray(guide),mask_image=Image.fromarray(np.uint8(~known)*255),
             control_image=Image.fromarray(depth_condition(depth)).convert('RGB'),ip_adapter_image=style,
             width=guide.shape[1],height=guide.shape[0],strength=.75-.1*attempt,num_inference_steps=30,guidance_scale=6.,
@@ -41,11 +58,11 @@ class AppearanceModels:
         prediction=self.torch.nn.functional.interpolate(prediction.reshape(1,1,*prediction.shape[-2:]),size=rgb.shape[:2],mode='bicubic',align_corners=False)
         return prediction[0,0].detach().cpu().numpy()
 
-    def detections(self,rgb):
+    def detections(self,rgb,labels=None):
         import inspect
-        inputs=self.detector_processor(images=Image.fromarray(rgb),text='sofa. table. bookshelf. chair.',return_tensors='pt').to('cuda')
+        inputs=self.detector_processor(images=Image.fromarray(rgb),text='. '.join(labels or ['sofa','table','bookshelf','chair'])+'.',return_tensors='pt').to('cuda')
         with self.torch.inference_mode():outputs=self.detector(**inputs)
         key='box_threshold' if 'box_threshold' in inspect.signature(self.detector_processor.post_process_grounded_object_detection).parameters else 'threshold'
-        result=self.detector_processor.post_process_grounded_object_detection(outputs,inputs.input_ids,target_sizes=[rgb.shape[:2]],text_threshold=.25,**{key:.4})[0]
+        result=self.detector_processor.post_process_grounded_object_detection(outputs,inputs.input_ids,target_sizes=[rgb.shape[:2]],text_threshold=.25,**{key:.25 if labels else .4})[0]
         names=result.get('text_labels',result.get('labels'))
-        return [dict(label=str(label),box=box.detach().cpu().tolist()) for label,box in zip(names,result['boxes'])]
+        return [dict(label=str(label),box=box.detach().cpu().tolist(),score=float(score)) for label,box,score in zip(names,result['boxes'],result['scores'])]

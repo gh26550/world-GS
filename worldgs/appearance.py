@@ -27,13 +27,13 @@ def synthesize_appearance(path,output,size=512,pilot_views=None,resume=False,_co
     if size<256 or size%8:raise ValueError('Appearance size must be >=256 and divisible by 8')
     original=json.loads((source/'scene.json').read_text())
     if original.get('appearance_audit'):raise ValueError('Use an original mesh-reference run, not an already stylized result')
-    request=dict(version=16,source=str(source),mesh_sha256=sha(source/'scene_mesh.glb'),
+    request=dict(version=17,source=str(source),mesh_sha256=sha(source/'scene_mesh.glb'),
                  front_sha256=sha(source/'source_front.png'),camera_sha256=sha(source/'scene.json'),
                  size=size,seed=original['seed'],controlnet='lllyasviel/control_v11f1p_sd15_depth',
                  base='stable-diffusion-v1-5/stable-diffusion-inpainting',ip_adapter='h94/IP-Adapter:ip-adapter_sd15.bin',
                  ip_scale=.2,min_depth_edge_recall=.55,source_mask_policy='bookshelf_composite_hull_v1',view_order='source_then_translated_object_pairs_v16',
-                 diffusion_strength=[.75,.65,.55],validation='generated_edges_planes_seating_family_v2',
-                 appearance_policy='source_anchor_full_translated_resynthesis_v16')
+                 diffusion_strength=[.75,.65,.55],validation='coarse_instance_layout_edges_planes_v17',
+                 appearance_policy='shared_layout_regional_synthesis_v17')
     manifest=folder/'appearance_request.json'
     if folder.exists() and any(folder.iterdir()):
         if not resume or not manifest.exists() or json.loads(manifest.read_text())!=request:
@@ -72,6 +72,15 @@ def synthesize_appearance(path,output,size=512,pilot_views=None,resume=False,_co
     from .front_alignment import source_mask
     plan=json.loads((folder/'planning/image_room_plan.json').read_text())
     names={c['name']:i for i,c in enumerate(components)}
+    from .layout_consistency import layout_contract,projected_objects,synthesis_regions,layout_check
+    contract=layout_contract(geometry,components,plan,request['mesh_sha256'],request['front_sha256'])
+    contract['prompt']=original['prompt']
+    contract_file=folder/'layout_contract.json'
+    if contract_file.exists() and json.loads(contract_file.read_text())!=contract:
+        raise ValueError('Shared world layout changed during reference synthesis')
+    contract_file.write_text(json.dumps(contract,indent=2))
+    object_labels={o['id']:o['label'] for o in contract['objects']}
+    vocabulary=sorted(set(object_labels.values())|{'sofa','chair','table','bookshelf','bed','cabinet'})
     for obj in plan['objects']:
         if obj.get('evidence')=='front':
             mask=source_mask(folder,obj,(size,size))
@@ -160,8 +169,12 @@ def synthesize_appearance(path,output,size=512,pilot_views=None,resume=False,_co
                 if index==0:
                     guide=np.asarray(style).copy()
                     known=hit['faces']>=0
+                projected=projected_objects(hit,owners,components,object_labels,min_pixels=max(16,size*size//4096))
+                for obj in projected:
+                    obj['description']=next(row['description'] for row in contract['objects'] if row['id']==obj['id'])
+                regions=synthesis_regions(projected,hit['depth'].shape)
                 attempts=[];guide_check=None;guide_detections=None
-                for attempt in range(3):
+                for attempt in range(1 if index==0 else 3):
                     if models is None:
                         from .appearance_models import AppearanceModels
                         models=AppearanceModels(original['seed'])
@@ -172,7 +185,7 @@ def synthesize_appearance(path,output,size=512,pilot_views=None,resume=False,_co
                         if index==0:
                             rgb=np.asarray(style).copy()
                         else:
-                            rgb=models.generate(prompt+' Same furniture identity, materials and lighting as the original room photograph. Preserve the camera perspective and object silhouettes.',guide,known,hit['depth'],style,index,attempt)
+                            rgb=models.generate(prompt+' Same furniture identity, materials and lighting as the original room photograph. Preserve the camera perspective and object silhouettes.',guide,known,hit['depth'],style,index,attempt,regions=regions)
                     except RuntimeError as error:
                         if 'black/rejected image' not in str(error):raise
                         check=dict(passed=False,generation_rejected=True,attempt=attempt)
@@ -183,13 +196,14 @@ def synthesize_appearance(path,output,size=512,pilot_views=None,resume=False,_co
                     check['guide_edge_recall']=guide_check['depth_edge_recall']
                     check['edge_threshold_policy']='min(0.55, max(0.05, 0.9 * guide recall)); calibrated for depth-estimator observability'
                     check['planarity']=structural_planarity(inverse,hit['faces'],owners,~known)
-                    check['semantics']=semantic_support(models.detections(rgb),hit['faces'],owners,components,rgb=rgb,generated_mask=~known,baseline_detections=guide_detections)
+                    check['layout']=layout_check(projected,models.detections(rgb,labels=vocabulary),hit['depth'].shape)
+                    check['semantics']=dict(passed=check['layout']['passed'],note='Instance layout check replaces seating-family and weak support checks')
                     check['passed']=check['passed'] and check['planarity']['passed'] and check['semantics']['passed']
                     check['protected_pixel_l1']=float(np.abs(rgb[known].astype(float)-guide[known]).mean()/255) if known.any() else 0.
                     check['passed']=check['passed'] and check['protected_pixel_l1']<=1/255
                     if index==0:
                         check['mesh_alignment_diagnostic_passed']=bool(check['passed'])
-                        check['passed']=bool(np.array_equal(rgb,np.asarray(style)))
+                        check['passed']=bool(np.array_equal(rgb,np.asarray(style))) and check['layout']['passed']
                         check['source_anchor_policy']='Exact source image; mesh mismatch is diagnostic, not a reason to replace the source'
                     attempts.append(check)
                     Image.fromarray(rgb).save(folder/'appearance_candidates'/f'{stem}_attempt_{attempt:02d}.png')
@@ -198,7 +212,7 @@ def synthesize_appearance(path,output,size=512,pilot_views=None,resume=False,_co
                     (folder/'appearance_records'/f'{stem}_rejected.json').write_text(json.dumps(attempts,indent=2))
                     rejections.append(dict(frame=frame['file_path'],target=frame['target'],attempts=attempts))
                     print('Rejected appearance reference: '+frame['file_path'],flush=True)
-                    if index==0:raise ValueError('The source-aligned front appearance failed validation')
+                    if index==0:raise ValueError('Initial image and shared layout disagree; inspect appearance_records/view_000_rejected.json before training')
                     continue
                 confidence=np.where(known,np.maximum(confidence,.55),.55).astype(np.float32)
                 Image.fromarray(rgb).save(folder/frame['file_path'])
@@ -259,8 +273,9 @@ def synthesize_appearance(path,output,size=512,pilot_views=None,resume=False,_co
             if key in original:meta[key]=original[key]
         meta['generation_method']='whole-room source photograph -> shared object meshes -> translated photographic references -> free GS with structural prior'
         meta['parallax_audit']='parallax_audit.json'
-        meta['training_geometry_policy']='structural_planes_furniture_relaxation_v16'
-        meta.update(appearance_audit='appearance_audit.json',reference_source='Depth-ControlNet + source-photo IP-Adapter + occlusion-tested appearance propagation',
+        meta['training_geometry_policy']='shared_layout_local_detail_v17'
+        meta['layout_contract']='layout_contract.json'
+        meta.update(appearance_audit='appearance_audit.json',reference_source='Shared object layout + region-conditioned depth ControlNet + source-photo IP-Adapter + layout acceptance gate',
                     proposal_images_are_training_targets=False,generated_appearance_images_are_training_targets=True)
         for frame in meta['frames']+meta['heldout_frames']:
             frame['reference_source']='mesh-conditioned synthesized photograph; exact shared mesh depth/normal/ID'
@@ -268,7 +283,7 @@ def synthesize_appearance(path,output,size=512,pilot_views=None,resume=False,_co
         meta['limitations'] += ['Generated references are hypotheses, not captured or independent ground truth',
                                'Mesh topology and missing architectural objects are not repaired by appearance synthesis',
                                'Depth-edge recall is a heuristic, not a guarantee of multi-view or semantic consistency']
-        audit=dict(version=16,complete=True,passed=all(r['passed'] for r in records),mesh_digest=meta['mesh_digest'],
+        audit=dict(version=17,layout_contract_sha256=sha(contract_file),complete=True,passed=all(r['passed'] for r in records),mesh_digest=meta['mesh_digest'],
                    parallax_sha256=sha(folder/'parallax_audit.json'),
                    request_sha256=sha(manifest),projection_sha256=projection_fingerprint(meta),views=records,
                    rejected_views=rejections,completion_round=_completion_round+1,split_selection=split_report,planned_views=len(planned),coverage=coverage,heldout_used_for_training_conditioning=False)
@@ -294,6 +309,14 @@ def validate_appearance(folder,meta):
     audit=json.loads((folder/meta['appearance_audit']).read_text())
     if not audit.get('complete') or not audit.get('passed') or audit.get('mesh_digest')!=meta['mesh_digest']:
         raise ValueError('Appearance references are incomplete, rejected or stale')
+    if audit.get('version',15)>=17:
+        contract=folder/'layout_contract.json'
+        if not contract.exists() or sha(contract)!=audit.get('layout_contract_sha256'):
+            raise ValueError('Shared layout contract changed after validation')
+        if meta.get('training_geometry_policy')!='shared_layout_local_detail_v17':
+            raise ValueError('Shared layout training policy changed')
+        if any(not r['attempts'][-1].get('layout',{}).get('passed') for r in audit['views']):
+            raise ValueError('Reference layout consistency has not passed')
     if audit.get('version',15)>=16:
         report=folder/'parallax_audit.json'
         if not report.exists() or sha(report)!=audit.get('parallax_sha256') or not json.loads(report.read_text()).get('passed'):

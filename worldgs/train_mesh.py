@@ -85,7 +85,7 @@ def train_mesh(path, steps, max_points):
     state = strategy.initialize_state(scene_scale=4.)
     K = t(meta['K'])[None]
     size = meta['size']
-    relaxed_furniture = meta.get('training_geometry_policy')=='structural_planes_furniture_relaxation_v16'
+    relaxed_furniture = meta.get('training_geometry_policy') in ('structural_planes_furniture_relaxation_v16','shared_layout_local_detail_v17')
     frames = meta['frames']
     targets = [t(np.asarray(Image.open(path/f['file_path']))/255)[None] for f in frames]
     depths = [t(np.load(path/f['depth_file'])) for f in frames]
@@ -145,6 +145,9 @@ def train_mesh(path, steps, max_points):
             local = normals+2*torch.linalg.cross(q[:,1:],torch.linalg.cross(q[:,1:],normals)-q[:,:1]*normals)
             sigma = ((local.square()*parameters['scales'].exp().square()).sum(-1)+1e-12).sqrt()
             prior = prior+torch.relu(sigma[structural]-.015).mean() if structural.any() else prior
+            if meta.get('training_geometry_policy')=='shared_layout_local_detail_v17':
+                from .layout_consistency import layout_displacement_loss
+                prior=prior+layout_displacement_loss(delta,source['component_ids'][nearest])
         elif expanded:
             prior = rgb_loss*0
         else:
