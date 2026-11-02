@@ -27,13 +27,13 @@ def synthesize_appearance(path,output,size=512,pilot_views=None,resume=False,_co
     if size<256 or size%8:raise ValueError('Appearance size must be >=256 and divisible by 8')
     original=json.loads((source/'scene.json').read_text())
     if original.get('appearance_audit'):raise ValueError('Use an original mesh-reference run, not an already stylized result')
-    request=dict(version=17,source=str(source),mesh_sha256=sha(source/'scene_mesh.glb'),
+    request=dict(version=20,source=str(source),mesh_sha256=sha(source/'scene_mesh.glb'),
                  front_sha256=sha(source/'source_front.png'),camera_sha256=sha(source/'scene.json'),
                  size=size,seed=original['seed'],controlnet='lllyasviel/control_v11f1p_sd15_depth',
                  base='stable-diffusion-v1-5/stable-diffusion-inpainting',ip_adapter='h94/IP-Adapter:ip-adapter_sd15.bin',
                  ip_scale=.2,min_depth_edge_recall=.55,source_mask_policy='bookshelf_composite_hull_v1',view_order='source_then_translated_object_pairs_v16',
-                 diffusion_strength=[.75,.65,.55],validation='coarse_instance_layout_edges_planes_v17',
-                 appearance_policy='shared_layout_regional_synthesis_v17')
+                 diffusion_strength=[.75,.65,.55],validation='world_surface_ownership_instance_depth_v20',
+                 appearance_policy='source_instance_calibrated_regional_synthesis_v18')
     manifest=folder/'appearance_request.json'
     if folder.exists() and any(folder.iterdir()):
         if not resume or not manifest.exists() or json.loads(manifest.read_text())!=request:
@@ -72,7 +72,7 @@ def synthesize_appearance(path,output,size=512,pilot_views=None,resume=False,_co
     from .front_alignment import source_mask
     plan=json.loads((folder/'planning/image_room_plan.json').read_text())
     names={c['name']:i for i,c in enumerate(components)}
-    from .layout_consistency import layout_contract,projected_objects,synthesis_regions,layout_check
+    from .layout_consistency import layout_contract,projected_objects,synthesis_regions,layout_check,calibrate_source_parts,structure_palette_guide,surface_regions,ownership_check
     contract=layout_contract(geometry,components,plan,request['mesh_sha256'],request['front_sha256'])
     contract['prompt']=original['prompt']
     contract_file=folder/'layout_contract.json'
@@ -81,9 +81,16 @@ def synthesize_appearance(path,output,size=512,pilot_views=None,resume=False,_co
     contract_file.write_text(json.dumps(contract,indent=2))
     object_labels={o['id']:o['label'] for o in contract['objects']}
     vocabulary=sorted(set(object_labels.values())|{'sofa','chair','table','bookshelf','bed','cabinet'})
+    source_masks={};furniture_envelope=np.zeros((size,size),bool)
+    object_styles={o['id']:Image.open(folder/'assets'/o['id']/'reference_asset.png').convert('RGB') for o in plan['objects'] if (folder/'assets'/o['id']/'reference_asset.png').exists()}
+    calibration_file=folder/'source_instance_parts.json'
+    calibration=json.loads(calibration_file.read_text()) if calibration_file.exists() else None
     for obj in plan['objects']:
         if obj.get('evidence')=='front':
             mask=source_mask(folder,obj,(size,size))
+            source_masks[obj['id']]=mask.copy()
+            x0,y0,x1,y1=np.rint(np.asarray(obj['source_box'])*size).astype(int)
+            furniture_envelope[max(0,y0):min(size,y1),max(0,x0):min(size,x1)]=True
             if 'bookshelf' in obj['id'] and mask.any():
                 from scipy.spatial import ConvexHull
                 from PIL import ImageDraw
@@ -92,8 +99,14 @@ def synthesize_appearance(path,output,size=512,pilot_views=None,resume=False,_co
                 ImageDraw.Draw(canvas).polygon([tuple(p) for p in points[hull.vertices]],fill=255)
                 mask=np.asarray(canvas)>0
             original_owner[mask]=names[obj['id']]
+    detections_file=folder/'planning/front_detections.json'
+    if detections_file.exists():
+        for detection in json.loads(detections_file.read_text()):
+            x0,y0,x1,y1=np.rint(np.asarray(detection['box'])*size/original['size']).astype(int)
+            furniture_envelope[max(0,y0):min(size,y1),max(0,x0):min(size,x1)]=True
     hit_owner=owners[np.maximum(front_hit['faces'],0)]
     source_valid=(front_hit['faces']>=0)&np.where(original_owner>=0,hit_owner==original_owner,hit_owner<6)
+    source_valid &= (hit_owner>=6)|~furniture_envelope
     source_valid=binary_erosion(source_valid,iterations=1)
     cache=[dict(frame=front,depth=front_hit['depth'],valid=source_valid,rgb=np.asarray(style),
                 confidence=np.ones((size,size)),source_anchor=True)]
@@ -152,7 +165,7 @@ def synthesize_appearance(path,output,size=512,pilot_views=None,resume=False,_co
                 guide=np.array(Image.open(source/frame['file_path']).convert('RGB').resize((size,size),Image.Resampling.LANCZOS))
                 floor_ids=[i for i,c in enumerate(components) if c['name']=='room_1_1']
                 floor=(hit['faces']>=0)&np.isin(owners[np.maximum(hit['faces'],0)],floor_ids)
-                guide[floor]=[148,113,75]
+                guide=structure_palette_guide(guide,hit,owners)
                 guide[known]=transferred[known]
                 from .room_method import protection_mask
                 known=protection_mask(hit,frame,known,front['transform_matrix'],owners)
@@ -171,8 +184,14 @@ def synthesize_appearance(path,output,size=512,pilot_views=None,resume=False,_co
                     known=hit['faces']>=0
                 projected=projected_objects(hit,owners,components,object_labels,min_pixels=max(16,size*size//4096))
                 for obj in projected:
+                    if not obj['requires_detection']:
+                        known |= obj['mask']
                     obj['description']=next(row['description'] for row in contract['objects'] if row['id']==obj['id'])
-                regions=synthesis_regions(projected,hit['depth'].shape)
+                regions=surface_regions(projected,hit['depth'].shape)
+                if index!=0:
+                    editable=np.zeros(hit['depth'].shape,bool)
+                    for region in regions:editable |= region['mask']
+                    known=~editable
                 attempts=[];guide_check=None;guide_detections=None
                 for attempt in range(1 if index==0 else 3):
                     if models is None:
@@ -185,7 +204,7 @@ def synthesize_appearance(path,output,size=512,pilot_views=None,resume=False,_co
                         if index==0:
                             rgb=np.asarray(style).copy()
                         else:
-                            rgb=models.generate(prompt+' Same furniture identity, materials and lighting as the original room photograph. Preserve the camera perspective and object silhouettes.',guide,known,hit['depth'],style,index,attempt,regions=regions)
+                            rgb=models.generate(prompt+' Same furniture identity, materials and lighting as the original room photograph. Preserve the camera perspective and object silhouettes.',guide,known,hit['depth'],style,index,attempt,regions=regions,object_styles=object_styles)
                     except RuntimeError as error:
                         if 'black/rejected image' not in str(error):raise
                         check=dict(passed=False,generation_rejected=True,attempt=attempt)
@@ -196,14 +215,31 @@ def synthesize_appearance(path,output,size=512,pilot_views=None,resume=False,_co
                     check['guide_edge_recall']=guide_check['depth_edge_recall']
                     check['edge_threshold_policy']='min(0.55, max(0.05, 0.9 * guide recall)); calibrated for depth-estimator observability'
                     check['planarity']=structural_planarity(inverse,hit['faces'],owners,~known)
-                    check['layout']=layout_check(projected,models.detections(rgb,labels=vocabulary),hit['depth'].shape)
+                    detections,recognition_conflicts=models.layout_detections(rgb,projected,vocabulary)
+                    if index==0 and calibration is None:
+                        calibration=calibrate_source_parts(projected,detections,hit['depth'].shape,source_masks)
+                        calibration['source_sha256']=request['front_sha256']
+                        calibration_file.write_text(json.dumps(calibration,indent=2))
+                    check['instance_recognition']=layout_check(projected,detections,hit['depth'].shape,source_parts=(calibration or {}).get('parts',{}))
+                    check['instance_recognition']['recognition_conflicts']=recognition_conflicts
+                    check['layout']=ownership_check(rgb,guide,regions)
+                    instance_depth=[]
+                    guide_inverse=models.inverse_depth(guide)
+                    for obj in projected:
+                        if not obj['requires_detection']:continue
+                        baseline=geometry_check(hit['depth'],guide_inverse,hit['faces'],owners,tolerance=round(10*size/512),generated_mask=obj['mask'])
+                        per_object=geometry_check(hit['depth'],inverse,hit['faces'],owners,tolerance=round(10*size/512),min_recall=min(.55,max(.15,.8*baseline['depth_edge_recall'])),generated_mask=obj['mask'])
+                        instance_depth.append(dict(id=obj['id'],**per_object))
+                    check['layout']['instance_depth']=instance_depth
+                    check['layout']['passed']=check['layout']['passed'] and all(r['passed'] for r in instance_depth)
                     check['semantics']=dict(passed=check['layout']['passed'],note='Instance layout check replaces seating-family and weak support checks')
                     check['passed']=check['passed'] and check['planarity']['passed'] and check['semantics']['passed']
                     check['protected_pixel_l1']=float(np.abs(rgb[known].astype(float)-guide[known]).mean()/255) if known.any() else 0.
                     check['passed']=check['passed'] and check['protected_pixel_l1']<=1/255
                     if index==0:
                         check['mesh_alignment_diagnostic_passed']=bool(check['passed'])
-                        check['passed']=bool(np.array_equal(rgb,np.asarray(style))) and check['layout']['passed']
+                        check['passed']=bool(np.array_equal(rgb,np.asarray(style)))
+                        check['layout']=dict(passed=check['passed'],policy='Immutable original source image; source/mesh alignment recorded separately')
                         check['source_anchor_policy']='Exact source image; mesh mismatch is diagnostic, not a reason to replace the source'
                     attempts.append(check)
                     Image.fromarray(rgb).save(folder/'appearance_candidates'/f'{stem}_attempt_{attempt:02d}.png')
@@ -271,7 +307,7 @@ def synthesize_appearance(path,output,size=512,pilot_views=None,resume=False,_co
         meta['coverage_probe_frames']=probes
         for key in ('mode','generation_source','input_image','front_alignment'):
             if key in original:meta[key]=original[key]
-        meta['generation_method']='whole-room source photograph -> shared object meshes -> translated photographic references -> free GS with structural prior'
+        meta['generation_method']='source photo -> shared world layout -> visible-instance surface refinement with immutable architecture -> GS with local detail freedom'
         meta['parallax_audit']='parallax_audit.json'
         meta['training_geometry_policy']='shared_layout_local_detail_v17'
         meta['layout_contract']='layout_contract.json'
@@ -283,7 +319,7 @@ def synthesize_appearance(path,output,size=512,pilot_views=None,resume=False,_co
         meta['limitations'] += ['Generated references are hypotheses, not captured or independent ground truth',
                                'Mesh topology and missing architectural objects are not repaired by appearance synthesis',
                                'Depth-edge recall is a heuristic, not a guarantee of multi-view or semantic consistency']
-        audit=dict(version=17,layout_contract_sha256=sha(contract_file),complete=True,passed=all(r['passed'] for r in records),mesh_digest=meta['mesh_digest'],
+        audit=dict(version=20,source_parts_sha256=sha(calibration_file),layout_contract_sha256=sha(contract_file),complete=True,passed=all(r['passed'] for r in records),mesh_digest=meta['mesh_digest'],
                    parallax_sha256=sha(folder/'parallax_audit.json'),
                    request_sha256=sha(manifest),projection_sha256=projection_fingerprint(meta),views=records,
                    rejected_views=rejections,completion_round=_completion_round+1,split_selection=split_report,planned_views=len(planned),coverage=coverage,heldout_used_for_training_conditioning=False)
@@ -309,6 +345,9 @@ def validate_appearance(folder,meta):
     audit=json.loads((folder/meta['appearance_audit']).read_text())
     if not audit.get('complete') or not audit.get('passed') or audit.get('mesh_digest')!=meta['mesh_digest']:
         raise ValueError('Appearance references are incomplete, rejected or stale')
+    if audit.get('version',15)>=18:
+        if not (folder/'source_instance_parts.json').exists() or sha(folder/'source_instance_parts.json')!=audit.get('source_parts_sha256'):
+            raise ValueError('Source instance ownership calibration changed')
     if audit.get('version',15)>=17:
         contract=folder/'layout_contract.json'
         if not contract.exists() or sha(contract)!=audit.get('layout_contract_sha256'):

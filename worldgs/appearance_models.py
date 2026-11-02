@@ -23,7 +23,7 @@ class AppearanceModels:
         self.detector=AutoModelForZeroShotObjectDetection.from_pretrained('IDEA-Research/grounding-dino-tiny').to('cuda')
         print('Appearance models ready: depth ControlNet + IP-Adapter',flush=True)
 
-    def generate(self,prompt,guide,known,depth,style,index,attempt,regions=None):
+    def generate(self,prompt,guide,known,depth,style,index,attempt,regions=None,object_styles=None):
         if regions is None:
             return self._sample(prompt,guide,known,depth,style,index,attempt)
         rgb=guide.copy()
@@ -36,7 +36,7 @@ class AppearanceModels:
             else:
                 local_prompt='Photorealistic '+region.get('description',region['label'])+'. Same materials and lighting as the reference room photograph. One existing '+region['label']+'. Keep its placement, size, orientation and camera perspective.'
                 extra_negative='additional furniture, duplicate objects'
-            rgb=self._sample(local_prompt,rgb,~editable,depth,style,index*31+n,attempt,negative_extra=extra_negative)
+            rgb=self._sample(local_prompt,rgb,~editable,depth,(object_styles or {}).get(region['id'],style),index*31+n,attempt,negative_extra=extra_negative)
         rgb[known]=guide[known]
         return rgb
 
@@ -66,3 +66,29 @@ class AppearanceModels:
         result=self.detector_processor.post_process_grounded_object_detection(outputs,inputs.input_ids,target_sizes=[rgb.shape[:2]],text_threshold=.25,**{key:.25 if labels else .4})[0]
         names=result.get('text_labels',result.get('labels'))
         return [dict(label=str(label),box=box.detach().cpu().tolist(),score=float(score)) for label,box,score in zip(names,result['boxes'],result['scores'])]
+
+    def layout_detections(self,rgb,objects,labels):
+        """Global detections plus expected-instance crop verification.
+
+        Crop evidence can disambiguate classification of the same box; it cannot
+        relocate an object or remove an unmatched detection somewhere else.
+        """
+        detections=self.detections(rgb,labels=labels);conditioned=[];h,w=rgb.shape[:2]
+        for obj in objects:
+            x0,y0,x1,y1=np.asarray(obj['box'],int);pad=max(4,int(.08*max(x1-x0,y1-y0)))
+            x0,y0=max(0,x0-pad),max(0,y0-pad);x1,y1=min(w,x1+pad),min(h,y1+pad)
+            crop=rgb[y0:y1,x0:x1]
+            if min(crop.shape[:2])<8:continue
+            for d in self.detections(crop,labels=[obj['label']]):
+                b=np.asarray(d['box'])+np.array([x0,y0,x0,y0]);conditioned.append(dict(label=d['label'],box=b.tolist(),score=d.get('score',1),verification='expected-instance crop'))
+        from .layout_consistency import category
+        filtered=[];conflicts=[]
+        for d in detections:
+            a=np.asarray(d['box']);alternative=False
+            for c in conditioned:
+                if category(c['label'])==category(d['label']):continue
+                b=np.asarray(c['box']);inter=np.maximum(0,np.minimum(a[2:],b[2:])-np.maximum(a[:2],b[:2])).prod()
+                union=np.prod(a[2:]-a[:2])+np.prod(b[2:]-b[:2])-inter
+                if inter/max(union,1)>.65:alternative=True;conflicts.append(dict(global_label=d['label'],conditioned_label=c['label'],box=d['box']));break
+            if not alternative:filtered.append(d)
+        return filtered+conditioned,conflicts

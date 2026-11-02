@@ -60,3 +60,39 @@ class LayoutTest(unittest.TestCase):
             (p/'audit.json').write_text(json.dumps(audit))
             with self.assertRaisesRegex(ValueError,'layout contract'):
                 validate_appearance(p,dict(appearance_audit='audit.json',mesh_digest='mesh'))
+
+    def test_nested_source_part_requires_mask_and_matched_parent(self):
+        from worldgs.layout_consistency import calibrate_source_parts
+        obj=self.obj();detections=[self.det(),self.det('chair',(15,15,30,30))]
+        calibrated=calibrate_source_parts([obj],detections,(100,100),{'sofa_00':obj['mask']})
+        self.assertTrue(layout_check([obj],detections,(100,100),calibrated['parts'])['passed'])
+        self.assertFalse(layout_check([obj],[detections[1]],(100,100),calibrated['parts'])['passed'])
+        self.assertFalse(layout_check([obj],[self.det(),self.det('chair',(60,60,90,90))],(100,100),calibrated['parts'])['passed'])
+        no_mask=calibrate_source_parts([obj],detections,(100,100),{'sofa_00':np.zeros((100,100),bool)})
+        self.assertEqual(no_mask['parts'],{})
+    def test_structural_swatch_cannot_carry_furniture_texture(self):
+        from worldgs.layout_consistency import structure_palette_guide
+        rgb=np.full((100,100,3),200,np.uint8);rgb[10:30,10:30]=0;hit={'faces':np.zeros((100,100),int)}
+        result=structure_palette_guide(rgb,hit,np.array([0]))
+        self.assertTrue((result==200).all())
+
+    def test_aggregate_recognition_cannot_hide_missing_parent_or_new_location(self):
+        a=self.obj();detections=[self.det(),self.det('bed',(11,11,39,39))]
+        self.assertTrue(layout_check([a],detections,(100,100))['passed'])
+        self.assertFalse(layout_check([a],[detections[1]],(100,100))['passed'])
+        self.assertFalse(layout_check([a],[self.det(),self.det('bed',(60,60,90,90))],(100,100))['passed'])
+    def test_subresolution_object_is_preserved_not_resynthesized(self):
+        a=self.obj();a['requires_detection']=False
+        regions=synthesis_regions([a],(100,100))
+        self.assertEqual(len(regions),1)
+        self.assertFalse(regions[0]['mask'][a['mask']].any())
+        self.assertTrue(layout_check([a],[],(100,100))['passed'])
+
+    def test_world_surface_edits_cannot_change_architecture_or_other_instance(self):
+        from worldgs.layout_consistency import surface_regions,ownership_check
+        a=self.obj();b=self.obj('chair_00','chair',(42,10,60,40));regions=surface_regions([a,b],(100,100))
+        self.assertFalse(regions[0]['mask'][b['mask']].any())
+        guide=np.zeros((100,100,3),np.uint8);rgb=guide.copy();rgb[regions[0]['mask']]=100
+        self.assertTrue(ownership_check(rgb,guide,regions)['passed'])
+        rgb[90,90]=100
+        self.assertFalse(ownership_check(rgb,guide,regions)['passed'])

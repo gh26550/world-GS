@@ -26,7 +26,7 @@ def projected_objects(hit,owners,components,labels,min_pixels=64):
         y,x=np.where(mask)
         rows.append(dict(id=comp['name'],label=category(labels.get(comp['name'],comp['name'])),
                          box=[int(x.min()),int(y.min()),int(x.max()+1),int(y.max()+1)],
-                         pixels=int(mask.sum()),mask=mask))
+                         pixels=int(mask.sum()),mask=mask,requires_detection=bool(mask.sum()>=max(256,valid.size*.005))))
     return rows
 
 
@@ -40,6 +40,7 @@ def synthesis_regions(objects,shape):
     for obj in objects:foreground |= obj['mask']
     regions=[dict(id='background',label='room architecture',mask=~binary_dilation(foreground,iterations=2))]
     for obj in objects:
+        if not obj.get('requires_detection',True):continue
         x0,y0,x1,y1=np.asarray(obj['box']);pad=max(3,int(.10*max(x1-x0,y1-y0)))
         mask=np.zeros(shape,bool);mask[max(0,y0-pad):min(h,y1+pad),max(0,x0-pad):min(w,x1+pad)]=True
         others=foreground & ~obj['mask']
@@ -48,7 +49,7 @@ def synthesis_regions(objects,shape):
     return regions
 
 
-def layout_check(objects,detections,shape):
+def layout_check(objects,detections,shape,source_parts=None):
     """One-to-one class/position/scale matching, permitting approximate geometry.
 
     Expected visible objects are mandatory, unexpected instances are rejected.
@@ -85,10 +86,36 @@ def layout_check(objects,detections,shape):
         for i,j in zip(*linear_sum_assignment(cost)):
             if cost[i,j]>=1e4:continue
             paired.append(dict(id=objects[i]['id'],label=objects[i]['label'],**metrics[i,j]));matched_o.add(i);matched_d.add(j)
+    retained=[]
+    for i,obj in enumerate(objects):
+        if not obj.get('requires_detection',True) and i not in matched_o:
+            matched_o.add(i);retained.append(obj['id'])
     missing=[o['id'] for i,o in enumerate(objects) if i not in matched_o]
-    unexpected=[d for j,d in enumerate(detected) if j not in matched_d]
+    unexpected=[];parts=[];ambiguous=[]
+    for j,d in enumerate(detected):
+        if j in matched_d:continue
+        b=np.asarray(d['box']);area=np.prod(b[2:]-b[:2]);owner=None
+        for i in matched_o:
+            obj=objects[i]
+            if d['label'] not in (source_parts or {}).get(obj['id'],[]):continue
+            a=np.asarray(obj['box']);inter=np.maximum(0,np.minimum(a[2:],b[2:])-np.maximum(a[:2],b[:2])).prod()
+            if inter/max(area,1)>=.9:owner=obj['id'];break
+        if owner is None:
+            # A detector box spanning already verified furniture is not evidence
+            # of an additional physical object. Keep the ambiguity explicit.
+            if objects and all('mask' in obj for obj in objects):
+                x0,y0,x1,y1=np.rint(b).astype(int);x0,x1=np.clip([x0,x1],0,w);y0,y1=np.clip([y0,y1],0,h)
+                occupied=np.zeros((h,w),bool)
+                for i in matched_o:occupied |= objects[i]['mask']
+                patch=occupied[y0:y1,x0:x1]
+                support=float(patch.mean()) if patch.size else 0.
+            else:support=0.
+            if support>=.65:
+                ambiguous.append(dict(**d,verified_instance_coverage=support,reason='Alternative/aggregate recognition on existing verified furniture'))
+            else:unexpected.append(d)
+        else:parts.append(dict(parent_id=owner,**d,reason='Source-mask-confirmed nested part; parent instance separately matched'))
     return dict(passed=not missing and not unexpected,matched=paired,missing_or_displaced=missing,
-                unexpected_or_displaced=unexpected,expected_count=len(objects),detected_count=len(detected),
+                unexpected_or_displaced=unexpected,source_confirmed_parts=parts,recognition_ambiguities=ambiguous,retained_small_instances=retained,expected_count=len(objects),detected_count=len(detected),
                 policy='class + one-to-one assignment + coarse center/scale; no texture or exact silhouette matching',
                 limitation='Detector mistakes can reject valid images or accept incorrect ones')
 
@@ -121,3 +148,63 @@ def layout_displacement_loss(delta,component_ids,tolerance=.04):
         displacement=delta[ids==component].mean(0).norm()
         terms.append(torch.relu(displacement-tolerance))
     return torch.stack(terms).mean() if terms else delta.sum()*0
+
+
+def calibrate_source_parts(objects,detections,shape,source_masks):
+    """Resolve source-image part detections using independent instance masks.
+
+    A parent must first match as its own class. The extra box must lie inside
+    that parent and be predominantly covered by that parent's source mask.
+    This cannot explain away a missing parent or a new object elsewhere.
+    """
+    baseline=layout_check(objects,detections,shape);matched={r['id'] for r in baseline['matched']};parts={};evidence=[]
+    h,w=shape
+    for det in baseline['unexpected_or_displaced']:
+        b=np.asarray(det['box']);x0,y0,x1,y1=np.rint(b).astype(int);x0,x1=np.clip([x0,x1],0,w);y0,y1=np.clip([y0,y1],0,h)
+        for obj in objects:
+            if obj['id'] not in matched or obj['id'] not in source_masks:continue
+            a=np.asarray(obj['box']);inter=np.maximum(0,np.minimum(a[2:],b[2:])-np.maximum(a[:2],b[:2])).prod()
+            patch=source_masks[obj['id']][y0:y1,x0:x1]
+            support=float(patch.mean()) if patch.size else 0.
+            if inter/max(np.prod(b[2:]-b[:2]),1)>=.9 and support>=.5:
+                parts.setdefault(obj['id'],[]).append(det['label']);evidence.append(dict(id=obj['id'],part=det['label'],source_mask_support=support,box=det['box']));break
+    return dict(parts=parts,evidence=evidence,policy='Source-mask ownership and separately matched parent required')
+
+
+def structure_palette_guide(rgb,hit,owners):
+    """Remove object-shaped detail baked into architectural material swatches.
+
+    Geometry and material palette stay intact. Photographic appearance is then
+    synthesized in the structural region, rather than reusing false furniture.
+    """
+    result=rgb.copy();valid=hit['faces']>=0;ids=owners[np.maximum(hit['faces'],0)]
+    for i in range(6):
+        mask=valid & (ids==i)
+        if mask.any():result[mask]=np.median(rgb[mask],axis=0).astype(np.uint8)
+    return result
+
+
+def surface_regions(objects,shape):
+    """Image edits are attached to projected visible world instances only.
+
+    A small contour band permits local shape refinement. Architecture is not
+    independently regenerated, and another instance's pixels stay protected.
+    """
+    foreground=np.zeros(shape,bool)
+    for obj in objects:foreground |= obj['mask']
+    rows=[];slack=max(2,round(min(shape)*.012))
+    for obj in objects:
+        if not obj.get('requires_detection',True):continue
+        mask=binary_dilation(obj['mask'],iterations=slack)
+        mask &= ~binary_dilation(foreground & ~obj['mask'],iterations=1)
+        rows.append(dict(id=obj['id'],label=obj['label'],description=obj.get('description',obj['label']),mask=mask))
+    return rows
+
+
+def ownership_check(rgb,guide,regions):
+    editable=np.zeros(rgb.shape[:2],bool)
+    for r in regions:editable |= r['mask']
+    diff=np.abs(rgb.astype(float)-guide.astype(float)).mean(-1)
+    outside=float(diff[~editable].max()) if (~editable).any() else 0.
+    return dict(passed=outside==0.,outside_instance_max_change=outside,
+                editable_fraction=float(editable.mean()),policy='Shared-world instance surface edits; immutable architecture and other-instance pixels')
