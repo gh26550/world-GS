@@ -266,7 +266,9 @@ def prepare_image_room(prompt, folder, size, seed, room_size=None, model_id=None
             image = ImageOps.fit(Image.open(front_image).convert('RGB'),(size,size))
         else:
             models = Models(seed)
-            image = models.front(prompt+', interior photograph of the entire room, wide angle, coherent furniture layout',size)
+            from .room_method import whole_room_prompt
+            image = models.front(whole_room_prompt(prompt),size)
+            (folder/'source_composition.json').write_text(json.dumps(dict(version=16,prompt=whole_room_prompt(prompt),requested_composition='back-corner establishing view; not automatically certified'),indent=2))
             del models
         if np.asarray(image).mean()<1:
             raise RuntimeError('Front image is black/rejected')

@@ -28,7 +28,7 @@ class AppearanceModels:
             negative_prompt='illustration, cartoon, plastic toy, empty bookcase, distorted furniture, duplicate furniture, warped walls, fisheye, text, watermark',
             image=Image.fromarray(guide),mask_image=Image.fromarray(np.uint8(~known)*255),
             control_image=Image.fromarray(depth_condition(depth)).convert('RGB'),ip_adapter_image=style,
-            width=guide.shape[1],height=guide.shape[0],strength=.6-.1*attempt,num_inference_steps=30,guidance_scale=6.,
+            width=guide.shape[1],height=guide.shape[0],strength=.75-.1*attempt,num_inference_steps=30,guidance_scale=6.,
             controlnet_conditioning_scale=1.2+.3*attempt,
             generator=self.torch.Generator('cuda').manual_seed(self.seed+index*17+attempt)).images[0]
         rgb=np.asarray(image).copy()

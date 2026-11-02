@@ -27,12 +27,13 @@ def synthesize_appearance(path,output,size=512,pilot_views=None,resume=False,_co
     if size<256 or size%8:raise ValueError('Appearance size must be >=256 and divisible by 8')
     original=json.loads((source/'scene.json').read_text())
     if original.get('appearance_audit'):raise ValueError('Use an original mesh-reference run, not an already stylized result')
-    request=dict(version=15,source=str(source),mesh_sha256=sha(source/'scene_mesh.glb'),
+    request=dict(version=16,source=str(source),mesh_sha256=sha(source/'scene_mesh.glb'),
                  front_sha256=sha(source/'source_front.png'),camera_sha256=sha(source/'scene.json'),
                  size=size,seed=original['seed'],controlnet='lllyasviel/control_v11f1p_sd15_depth',
                  base='stable-diffusion-v1-5/stable-diffusion-inpainting',ip_adapter='h94/IP-Adapter:ip-adapter_sd15.bin',
-                 ip_scale=.2,min_depth_edge_recall=.55,source_mask_policy='bookshelf_composite_hull_v1',view_order='bootstrap_quadrants_v1',
-                 diffusion_strength=[.6,.5,.4],validation='generated_edges_planes_seating_family_v2')
+                 ip_scale=.2,min_depth_edge_recall=.55,source_mask_policy='bookshelf_composite_hull_v1',view_order='source_then_translated_object_pairs_v16',
+                 diffusion_strength=[.75,.65,.55],validation='generated_edges_planes_seating_family_v2',
+                 appearance_policy='source_anchor_full_translated_resynthesis_v16')
     manifest=folder/'appearance_request.json'
     if folder.exists() and any(folder.iterdir()):
         if not resume or not manifest.exists() or json.loads(manifest.read_text())!=request:
@@ -41,7 +42,7 @@ def synthesize_appearance(path,output,size=512,pilot_views=None,resume=False,_co
         folder.mkdir(parents=True,exist_ok=True)
         for name in ('assets','planning','materials','room_images'):
             if (source/name).exists():shutil.copytree(source/name,folder/name)
-        for name in ('scene_mesh.glb','mesh_geometry.npz','layout.json','source_front.png','image_room_provenance.json','front_alignment.json','request.json','reference_coverage.json'):
+        for name in ('scene_mesh.glb','mesh_geometry.npz','layout.json','source_front.png','image_room_provenance.json','front_alignment.json','request.json','reference_coverage.json','source_composition.json'):
             if (source/name).exists():shutil.copy2(source/name,folder/name)
         manifest.write_text(json.dumps(request,indent=2))
     (folder/'appearance_records').mkdir(exist_ok=True);(folder/'appearance_candidates').mkdir(exist_ok=True)
@@ -94,6 +95,20 @@ def synthesize_appearance(path,output,size=512,pilot_views=None,resume=False,_co
     priority=[]
     for target in ('front','room_yaw_0_pitch_0','room_yaw_180_pitch_0','room_yaw_90_pitch_0','room_yaw_270_pitch_0'):
         priority += [i for i in order if frames[i]['target']==target]
+    # Inspect translated furniture views before spending the pilot on empty walls.
+    groups={}
+    for i in order:
+        if frames[i]['target'].startswith('object_detail_'):
+            groups.setdefault(frames[i]['target'].rsplit('_',1)[0],[]).append(i)
+    translated=[]
+    for indices in groups.values():
+        if len(indices)>1:
+            a,b=max(((a,b) for j,a in enumerate(indices) for b in indices[j+1:]),
+                    key=lambda pair:np.linalg.norm(np.asarray(frames[pair[0]]['transform_matrix'])[:3,3]-np.asarray(frames[pair[1]]['transform_matrix'])[:3,3]))
+            translated.extend([a,b])
+        else:translated.extend(indices)
+    priority=[0]+translated+[i for i in priority if i!=0]
+    priority=list(dict.fromkeys(priority))
     order=priority+[i for i in order if i not in priority]
     order += [i for i,f in enumerate(frames) if f['split']=='heldout']
     # A later completion round can use every already validated TRAINING image.
@@ -130,6 +145,8 @@ def synthesize_appearance(path,output,size=512,pilot_views=None,resume=False,_co
                 floor=(hit['faces']>=0)&np.isin(owners[np.maximum(hit['faces'],0)],floor_ids)
                 guide[floor]=[148,113,75]
                 guide[known]=transferred[known]
+                from .room_method import protection_mask
+                known=protection_mask(hit,frame,known,front['transform_matrix'],owners)
                 visible_ids=owners[hit['faces'][hit['faces']>=0]]
                 descriptions=[]
                 for obj in job['plan']['objects']:
@@ -140,6 +157,9 @@ def synthesize_appearance(path,output,size=512,pilot_views=None,resume=False,_co
                 style_words=' '.join(str(job['plan'].get('style','')).split()[:8])
                 prompt='Photorealistic interior photograph of the same room. '+material+'. '+style_words+'. '
                 prompt += ('Visible furniture: '+', '.join(descriptions)+'.') if descriptions else 'Plain room surfaces, no additional furniture.'
+                if index==0:
+                    guide=np.asarray(style).copy()
+                    known=hit['faces']>=0
                 attempts=[];guide_check=None;guide_detections=None
                 for attempt in range(3):
                     if models is None:
@@ -149,7 +169,10 @@ def synthesize_appearance(path,output,size=512,pilot_views=None,resume=False,_co
                         guide_check=geometry_check(hit['depth'],models.inverse_depth(guide),hit['faces'],owners,tolerance=round(10*size/512),generated_mask=~known)
                         guide_detections=models.detections(guide)
                     try:
-                        rgb=models.generate(prompt,guide,known,hit['depth'],style,index,attempt)
+                        if index==0:
+                            rgb=np.asarray(style).copy()
+                        else:
+                            rgb=models.generate(prompt+' Same furniture identity, materials and lighting as the original room photograph. Preserve the camera perspective and object silhouettes.',guide,known,hit['depth'],style,index,attempt)
                     except RuntimeError as error:
                         if 'black/rejected image' not in str(error):raise
                         check=dict(passed=False,generation_rejected=True,attempt=attempt)
@@ -164,6 +187,10 @@ def synthesize_appearance(path,output,size=512,pilot_views=None,resume=False,_co
                     check['passed']=check['passed'] and check['planarity']['passed'] and check['semantics']['passed']
                     check['protected_pixel_l1']=float(np.abs(rgb[known].astype(float)-guide[known]).mean()/255) if known.any() else 0.
                     check['passed']=check['passed'] and check['protected_pixel_l1']<=1/255
+                    if index==0:
+                        check['mesh_alignment_diagnostic_passed']=bool(check['passed'])
+                        check['passed']=bool(np.array_equal(rgb,np.asarray(style)))
+                        check['source_anchor_policy']='Exact source image; mesh mismatch is diagnostic, not a reason to replace the source'
                     attempts.append(check)
                     Image.fromarray(rgb).save(folder/'appearance_candidates'/f'{stem}_attempt_{attempt:02d}.png')
                     if check['passed']:break
@@ -205,6 +232,11 @@ def synthesize_appearance(path,output,size=512,pilot_views=None,resume=False,_co
         for record in records:
             record['split']=next(f['split'] for f in job['frames'] if f['file_path']==record['frame'])
         training=[f for f in job['frames'] if f['split']=='view']
+        from .room_method import parallax_audit
+        parallax=parallax_audit(renderer,components,owners,training)
+        (folder/'parallax_audit.json').write_text(json.dumps(parallax,indent=2))
+        if not parallax['passed']:
+            raise ValueError('Insufficient translated-view supervision per object; inspect parallax_audit.json')
         coverage=audit_planned_coverage(mesh,components,owners,planned,training,size)
         (folder/'appearance_coverage.json').write_text(json.dumps(coverage,indent=2))
         if not coverage['passed']:
@@ -225,6 +257,9 @@ def synthesize_appearance(path,output,size=512,pilot_views=None,resume=False,_co
         meta['coverage_probe_frames']=probes
         for key in ('mode','generation_source','input_image','front_alignment'):
             if key in original:meta[key]=original[key]
+        meta['generation_method']='whole-room source photograph -> shared object meshes -> translated photographic references -> free GS with structural prior'
+        meta['parallax_audit']='parallax_audit.json'
+        meta['training_geometry_policy']='structural_planes_furniture_relaxation_v16'
         meta.update(appearance_audit='appearance_audit.json',reference_source='Depth-ControlNet + source-photo IP-Adapter + occlusion-tested appearance propagation',
                     proposal_images_are_training_targets=False,generated_appearance_images_are_training_targets=True)
         for frame in meta['frames']+meta['heldout_frames']:
@@ -233,7 +268,8 @@ def synthesize_appearance(path,output,size=512,pilot_views=None,resume=False,_co
         meta['limitations'] += ['Generated references are hypotheses, not captured or independent ground truth',
                                'Mesh topology and missing architectural objects are not repaired by appearance synthesis',
                                'Depth-edge recall is a heuristic, not a guarantee of multi-view or semantic consistency']
-        audit=dict(version=15,complete=True,passed=all(r['passed'] for r in records),mesh_digest=meta['mesh_digest'],
+        audit=dict(version=16,complete=True,passed=all(r['passed'] for r in records),mesh_digest=meta['mesh_digest'],
+                   parallax_sha256=sha(folder/'parallax_audit.json'),
                    request_sha256=sha(manifest),projection_sha256=projection_fingerprint(meta),views=records,
                    rejected_views=rejections,completion_round=_completion_round+1,split_selection=split_report,planned_views=len(planned),coverage=coverage,heldout_used_for_training_conditioning=False)
         (folder/'appearance_audit.json').write_text(json.dumps(audit,indent=2))
@@ -258,6 +294,10 @@ def validate_appearance(folder,meta):
     audit=json.loads((folder/meta['appearance_audit']).read_text())
     if not audit.get('complete') or not audit.get('passed') or audit.get('mesh_digest')!=meta['mesh_digest']:
         raise ValueError('Appearance references are incomplete, rejected or stale')
+    if audit.get('version',15)>=16:
+        report=folder/'parallax_audit.json'
+        if not report.exists() or sha(report)!=audit.get('parallax_sha256') or not json.loads(report.read_text()).get('passed'):
+            raise ValueError('Translated-view supervision audit is missing, failed or changed')
     if audit['request_sha256']!=sha(folder/'appearance_request.json'):raise ValueError('Appearance request changed after validation')
     if audit.get('projection_sha256')!=projection_fingerprint(meta):raise ValueError('Appearance cameras changed after validation')
     expected={f['file_path'] for f in meta['frames']+meta['heldout_frames']}

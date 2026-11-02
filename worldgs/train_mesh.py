@@ -85,6 +85,7 @@ def train_mesh(path, steps, max_points):
     state = strategy.initialize_state(scene_scale=4.)
     K = t(meta['K'])[None]
     size = meta['size']
+    relaxed_furniture = meta.get('training_geometry_policy')=='structural_planes_furniture_relaxation_v16'
     frames = meta['frames']
     targets = [t(np.asarray(Image.open(path/f['file_path']))/255)[None] for f in frames]
     depths = [t(np.load(path/f['depth_file'])) for f in frames]
@@ -92,6 +93,13 @@ def train_mesh(path, steps, max_points):
     confidences = [t(np.load(path/f['confidence_file'])) if f.get('confidence_file') else torch.ones_like(masks[i], dtype=torch.float32)
                    for i, f in enumerate(frames)]
     poses = [torch.linalg.inv(t(f['transform_matrix']))[None] for f in frames]
+    geometry_weights=[]
+    if relaxed_furniture:
+        owner_ids=np.load(path/'mesh_geometry.npz')['owners']
+        for frame in frames:
+            face_ids=np.load(path/frame['face_file'])
+            structure=(face_ids>=0)&(owner_ids[np.maximum(face_ids,0)]<6)
+            geometry_weights.append(t(np.where(structure,.2,.03)))
     tree = cKDTree(source['xyz'])
     anchors, normals = None, None
     matte_mask,anchor_colors=None,None
@@ -129,8 +137,8 @@ def train_mesh(path, steps, max_points):
             delta = parameters['means']-anchors
             offset = (delta*normals).sum(-1).abs()
             structural = t(source['component_ids'][nearest] < 6).bool()
-            tolerance = torch.where(structural, .015, .06)
-            prior = torch.relu(offset-tolerance).mean()+.1*torch.relu(delta.norm(dim=-1)-.15).mean()
+            tolerance = torch.where(structural, .015, .15 if relaxed_furniture else .06)
+            prior = torch.relu(offset-tolerance).mean()+.1*torch.relu(delta.norm(dim=-1)-(.3 if relaxed_furniture else .15)).mean()
             # Normal thickness is softly bounded on room structure. Rotation,
             # covariance and furniture geometry are still trainable.
             q = torch.nn.functional.normalize(parameters['quats'],dim=-1)
@@ -145,6 +153,11 @@ def train_mesh(path, steps, max_points):
         # Generated-depth scenes have no constraint to their initial scaffold.
         # Predicted depth is an uncertain cue; reduce its weight during fitting.
         depth_weight = .2 if prompt_mesh else .1*(1-.8*step/max(steps-1, 1)) if expanded else .1
+        if relaxed_furniture and supported.any():
+            per_pixel_weight=geometry_weights[i]
+            error=(rendered[0,...,3].clamp_min(.05).log()-depths[i].clamp_min(.05).log()).abs()
+            depth_loss=confidence_loss((error*per_pixel_weight)[supported],confidences[i][supported])
+            depth_weight=1.
         coverage_loss = foreground_coverage_loss(alpha[0, ..., 0], confidences[i], valid) if coverage_mode else rgb_loss*0
         loss = rgb_loss+depth_weight*depth_loss+(.3 if prompt_mesh else 0. if expanded else .1)*prior+.05*coverage_loss
         if matte_mask is not None and matte_mask.any():
@@ -222,7 +235,8 @@ def train_mesh(path, steps, max_points):
     nearest = tree.query(means, workers=2)[0]
     training = {'reference_source':meta.get('reference_source'),'trainer': meta['mode'] if prompt_mesh else ('coverage_3dgs_v7' if coverage_mode else 'fused_tsdf_3dgs_v6' if meta.get('mode') == 'global_tsdf_v6' else 'generated_rgbd_3dgs_v5' if meta.get('mode') == 'progressive_rgbd_v5' else 'generated_rgbd_3dgs_v4') if expanded else 'free_3dgs_mesh_references_v3', 'steps': steps, 'initial_points': n, 'final_points': len(means),
         'coverage_loss_weight': .05 if coverage_mode else 0., 'spatially_stratified_sampling': coverage_mode, 'spatial_budget_pruning': coverage_mode,
-        'mesh_prior_weight': .3 if prompt_mesh else 0. if expanded else .1, 'depth_weight_schedule': [.2, .2] if prompt_mesh else [.1, .02] if expanded else [.1, .1],
+        'geometry_policy':meta.get('training_geometry_policy','legacy'), 'structural_depth_weight':.2 if relaxed_furniture else None, 'furniture_depth_weight':.03 if relaxed_furniture else None,
+        'mesh_prior_weight': .3 if prompt_mesh else 0. if expanded else .1, 'depth_weight_schedule': 'structure=0.2; furniture=0.03' if relaxed_furniture else [.2, .2] if prompt_mesh else [.1, .02] if expanded else [.1, .1],
         'trainable': list(parameters.keys()), 'hard_projection': False, 'densification': True, 'sh_degree': degree,
         'matte_room_components':matte_components,'matte_room_sh_degree':0 if matte_components else None,
         'nearest_source_distance_median': float(np.median(nearest)), 'nearest_source_distance_p95': float(np.quantile(nearest, .95)), 'log': log}
