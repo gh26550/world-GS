@@ -96,3 +96,10 @@ class LayoutTest(unittest.TestCase):
         self.assertTrue(ownership_check(rgb,guide,regions)['passed'])
         rgb[90,90]=100
         self.assertFalse(ownership_check(rgb,guide,regions)['passed'])
+
+    def test_matched_table_box_does_not_remove_floor_between_legs(self):
+        from worldgs.layout_consistency import source_exclusion_mask
+        obj=dict(id='table_00',label='coffee table',evidence='front',source_box=[.2,.2,.8,.8])
+        detections=[dict(label='table',box=[20,20,80,80]),dict(label='chair',box=[0,0,15,20])]
+        mask=source_exclusion_mask((100,100),[obj],detections,100)
+        self.assertFalse(mask[60,50]);self.assertTrue(mask[10,5])

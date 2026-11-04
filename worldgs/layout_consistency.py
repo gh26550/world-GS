@@ -208,3 +208,22 @@ def ownership_check(rgb,guide,regions):
     outside=float(diff[~editable].max()) if (~editable).any() else 0.
     return dict(passed=outside==0.,outside_instance_max_change=outside,
                 editable_fraction=float(editable.mean()),policy='Shared-world instance surface edits; immutable architecture and other-instance pixels')
+
+
+def source_exclusion_mask(shape,objects,detections,source_size):
+    """Exclude unmatched furniture detections from architecture projection.
+
+    Matched instances already have pixel-accurate SAM ownership. Excluding their
+    entire rectangles would also discard the valid floor between table legs.
+    """
+    h,w=shape;scale=np.array([w/source_size,h/source_size,w/source_size,h/source_size]);mask=np.zeros(shape,bool)
+    for det in detections:
+        b=np.asarray(det['box'],float)*scale;matched=False
+        for obj in objects:
+            if obj.get('evidence')!='front' or category(obj['label'])!=category(det['label']):continue
+            a=np.asarray(obj['source_box'],float)*np.array([w,h,w,h]);inter=np.maximum(0,np.minimum(a[2:],b[2:])-np.maximum(a[:2],b[:2])).prod()
+            union=np.prod(a[2:]-a[:2])+np.prod(b[2:]-b[:2])-inter
+            if inter/max(union,1)>.2:matched=True;break
+        if not matched:
+            x0,y0,x1,y1=np.rint(b).astype(int);mask[max(0,y0):min(h,y1),max(0,x0):min(w,x1)]=True
+    return mask

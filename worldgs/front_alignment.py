@@ -160,6 +160,18 @@ def fit_front(plan, meshes, folder, *, max_nfev=180):
         return np.asarray(residuals)
     before=np.linalg.norm(residual(initial))
     solved=least_squares(residual,initial,bounds=(lower,upper),loss='soft_l1',f_scale=.3,max_nfev=max_nfev)
+    # Bounding-box objectives can have a poor local minimum near zero yaw for
+    # symmetric shelves. Try alternate coarse orientations only for bad fits.
+    yaw_trials=[]
+    for j,(i,obj) in enumerate(observed):
+        K0,pose0=camera(solved.x)
+        current_box=projection(points(j,solved.x),K0,pose0,size)[0]
+        if box_iou(current_box,targets[j])>=.75:continue
+        for angle in (-np.pi/4,np.pi/4):
+            start=solved.x.copy();start[7+j*4]=np.clip(angle,lower[7+j*4]+1e-6,upper[7+j*4]-1e-6)
+            candidate=least_squares(residual,start,bounds=(lower,upper),loss='soft_l1',f_scale=.3,max_nfev=max_nfev)
+            yaw_trials.append(dict(id=obj['id'],initial_yaw_degrees=float(np.rad2deg(angle)),cost=float(candidate.cost)))
+            if candidate.cost<solved.cost:solved=candidate
     values=solved.x
     K,pose=camera(values)
     after_objective=float(np.linalg.norm(residual(values)))
@@ -181,7 +193,7 @@ def fit_front(plan, meshes, folder, *, max_nfev=180):
         box=fitted_boxes[j]
         rows.append(dict(id=obj['id'],source_box=targets[j].tolist(),before_box=oldbox.tolist(),after_box=box.tolist(),
                          before_iou=box_iou(oldbox,targets[j]),after_iou=box_iou(box,targets[j])))
-    report=dict(method='robust front reprojection with optional MoGe camera/depth/floor priors',
+    report=dict(yaw_multistart=yaw_trials,method='robust front reprojection with optional MoGe camera/depth/floor priors',
         reference='source segmentation, not independent 3D ground truth',floor=floor,
         objective_before=float(before),objective_after=after_objective,
         optimized_fov=float(values[0]),camera_to_world=pose.tolist(),objects=rows,

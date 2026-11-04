@@ -27,12 +27,12 @@ def synthesize_appearance(path,output,size=512,pilot_views=None,resume=False,_co
     if size<256 or size%8:raise ValueError('Appearance size must be >=256 and divisible by 8')
     original=json.loads((source/'scene.json').read_text())
     if original.get('appearance_audit'):raise ValueError('Use an original mesh-reference run, not an already stylized result')
-    request=dict(version=20,source=str(source),mesh_sha256=sha(source/'scene_mesh.glb'),
+    request=dict(version=21,source=str(source),mesh_sha256=sha(source/'scene_mesh.glb'),
                  front_sha256=sha(source/'source_front.png'),camera_sha256=sha(source/'scene.json'),
                  size=size,seed=original['seed'],controlnet='lllyasviel/control_v11f1p_sd15_depth',
                  base='stable-diffusion-v1-5/stable-diffusion-inpainting',ip_adapter='h94/IP-Adapter:ip-adapter_sd15.bin',
                  ip_scale=.2,min_depth_edge_recall=.55,source_mask_policy='bookshelf_composite_hull_v1',view_order='source_then_translated_object_pairs_v16',
-                 diffusion_strength=[.75,.65,.55],validation='world_surface_ownership_instance_depth_v20',
+                 diffusion_strength=[.75,.65,.55],validation='world_surface_ownership_instance_depth_v21',source_projection_policy='instance_masks_and_unmatched_boxes',
                  appearance_policy='source_instance_calibrated_regional_synthesis_v18')
     manifest=folder/'appearance_request.json'
     if folder.exists() and any(folder.iterdir()):
@@ -72,7 +72,7 @@ def synthesize_appearance(path,output,size=512,pilot_views=None,resume=False,_co
     from .front_alignment import source_mask
     plan=json.loads((folder/'planning/image_room_plan.json').read_text())
     names={c['name']:i for i,c in enumerate(components)}
-    from .layout_consistency import layout_contract,projected_objects,synthesis_regions,layout_check,calibrate_source_parts,structure_palette_guide,surface_regions,ownership_check
+    from .layout_consistency import layout_contract,projected_objects,synthesis_regions,layout_check,calibrate_source_parts,structure_palette_guide,surface_regions,ownership_check,source_exclusion_mask
     contract=layout_contract(geometry,components,plan,request['mesh_sha256'],request['front_sha256'])
     contract['prompt']=original['prompt']
     contract_file=folder/'layout_contract.json'
@@ -89,8 +89,6 @@ def synthesize_appearance(path,output,size=512,pilot_views=None,resume=False,_co
         if obj.get('evidence')=='front':
             mask=source_mask(folder,obj,(size,size))
             source_masks[obj['id']]=mask.copy()
-            x0,y0,x1,y1=np.rint(np.asarray(obj['source_box'])*size).astype(int)
-            furniture_envelope[max(0,y0):min(size,y1),max(0,x0):min(size,x1)]=True
             if 'bookshelf' in obj['id'] and mask.any():
                 from scipy.spatial import ConvexHull
                 from PIL import ImageDraw
@@ -101,9 +99,7 @@ def synthesize_appearance(path,output,size=512,pilot_views=None,resume=False,_co
             original_owner[mask]=names[obj['id']]
     detections_file=folder/'planning/front_detections.json'
     if detections_file.exists():
-        for detection in json.loads(detections_file.read_text()):
-            x0,y0,x1,y1=np.rint(np.asarray(detection['box'])*size/original['size']).astype(int)
-            furniture_envelope[max(0,y0):min(size,y1),max(0,x0):min(size,x1)]=True
+        furniture_envelope=source_exclusion_mask((size,size),plan['objects'],json.loads(detections_file.read_text()),original['size'])
     hit_owner=owners[np.maximum(front_hit['faces'],0)]
     source_valid=(front_hit['faces']>=0)&np.where(original_owner>=0,hit_owner==original_owner,hit_owner<6)
     source_valid &= (hit_owner>=6)|~furniture_envelope
@@ -319,7 +315,7 @@ def synthesize_appearance(path,output,size=512,pilot_views=None,resume=False,_co
         meta['limitations'] += ['Generated references are hypotheses, not captured or independent ground truth',
                                'Mesh topology and missing architectural objects are not repaired by appearance synthesis',
                                'Depth-edge recall is a heuristic, not a guarantee of multi-view or semantic consistency']
-        audit=dict(version=20,source_parts_sha256=sha(calibration_file),layout_contract_sha256=sha(contract_file),complete=True,passed=all(r['passed'] for r in records),mesh_digest=meta['mesh_digest'],
+        audit=dict(version=21,source_parts_sha256=sha(calibration_file),layout_contract_sha256=sha(contract_file),complete=True,passed=all(r['passed'] for r in records),mesh_digest=meta['mesh_digest'],
                    parallax_sha256=sha(folder/'parallax_audit.json'),
                    request_sha256=sha(manifest),projection_sha256=projection_fingerprint(meta),views=records,
                    rejected_views=rejections,completion_round=_completion_round+1,split_selection=split_report,planned_views=len(planned),coverage=coverage,heldout_used_for_training_conditioning=False)
