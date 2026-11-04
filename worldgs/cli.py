@@ -16,7 +16,7 @@ def main():
     generate.add_argument('--views', type=int, default=24)
     generate.add_argument('--seed', type=int, default=0)
     generate.add_argument('--demo', action='store_true', help='Synthetic integration fixture; does not generate images from the prompt')
-    generate.add_argument('--mode', choices=['photo-room', 'image-room', 'learned', 'scene', 'expand', 'mesh', 'room', 'legacy'], default='photo-room', help='photo-room adds mesh-conditioned photographic references; image-room starts from a whole-room front image; learned retains independent object image generation')
+    generate.add_argument('--mode', choices=['room-local','photo-room', 'image-room', 'learned', 'scene', 'expand', 'mesh', 'room', 'legacy'], default='room-local', help='photo-room adds mesh-conditioned photographic references; image-room starts from a whole-room front image; learned retains independent object image generation')
     generate.add_argument('--resume',action='store_true',help='Resume an identical image-room/learned request from completed stages')
     generate.add_argument('--planner-model',help='Qwen2.5-VL model for image-room, or causal model for learned')
     generate.add_argument('--layout-file', help='Editable saved layout.json; mesh mode only, bypasses depth estimation and detection')
@@ -42,6 +42,22 @@ def main():
     guides=sub.add_parser('prepare-photographs',help='Prepare unprojected camera proxy guides and two-image generation prompts')
     guides.add_argument('path')
     guides.add_argument('--output',required=True)
+    local=sub.add_parser('generate-room-views',help='Local whole-room camera/depth/photograph generation, with automatic verification')
+    local.add_argument('path')
+    local.add_argument('--output',required=True)
+    local.add_argument('--perimeter',type=int,default=16)
+    local.add_argument('--overhead',type=int,default=8)
+    local.add_argument('--adaptive',type=int,default=8)
+    local.add_argument('--fov',type=float,default=75)
+    local.add_argument('--pilot-views',type=int)
+    local.add_argument('--prepare-only',action='store_true')
+    local.add_argument('--resume',action='store_true')
+    local.add_argument('--retries',type=int,default=3)
+    local.add_argument('--backend-root')
+    local.add_argument('--port',type=int,default=8197)
+    local.add_argument('--conditioning',choices=['structure','atlas'],default='structure')
+    local.add_argument('--image-model',choices=['controlnet','base','distilled'],default='controlnet')
+    local.add_argument('--train-steps',type=int,default=0)
     proxy=sub.add_parser('complete-proxy',help='Ground missing window and rug from the source image and rerender proxy guides')
     proxy.add_argument('path')
     proxy.add_argument('--output',required=True)
@@ -89,6 +105,9 @@ def main():
     elif command == 'prepare-photographs':
         from .external_references import prepare_photograph_guides
         prepare_photograph_guides(**args)
+    elif command == 'generate-room-views':
+        from .local_room import generate_room_views
+        generate_room_views(**args)
     elif command == 'complete-proxy':
         from .proxy_completion import complete_proxy
         complete_proxy(**args)

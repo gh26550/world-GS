@@ -170,7 +170,11 @@ def generate_legacy(prompt, output, size=512, views=24, seed=0, demo=False):
     return metadata
 
 
-def generate(prompt, output, size=512, views=24, seed=0, demo=False, mode='photo-room', front_image=None, room_size=None, layout_file=None, resume=False, planner_model=None):
+def generate(prompt, output, size=512, views=24, seed=0, demo=False, mode='room-local', front_image=None, room_size=None, layout_file=None, resume=False, planner_model=None):
+    if mode == 'room-local':
+        if demo or layout_file:raise ValueError('room-local requires image-based room reconstruction')
+        from .local_room import generate_local_scene
+        return generate_local_scene(prompt,output,size,views,seed,front_image,room_size,resume,planner_model)
     if mode == 'photo-room':
         if demo or layout_file:
             raise ValueError('photo-room requires real image and mesh generation')
