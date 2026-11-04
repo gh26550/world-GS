@@ -25,6 +25,15 @@ def foreground_coverage_loss(alpha, confidence, mask):
     return confidence_loss(-alpha[mask].clamp(1e-4, 1.).log(), confidence[mask])
 
 
+def training_frame_index(frames,step):
+    photo=[i for i,f in enumerate(frames) if f.get('rgb_weight',1.)>0]
+    geometry=[i for i,f in enumerate(frames) if f.get('rgb_weight',1.)==0]
+    if any(not 0<=f.get('rgb_weight',1.)<=1 for f in frames):raise ValueError('RGB weight must be in [0,1]')
+    if not photo:raise ValueError('At least one photographic RGB target is required')
+    if not geometry:return step%len(frames)
+    return geometry[(step//4)%len(geometry)] if step%4==3 else photo[(step-step//4)%len(photo)]
+
+
 def train_mesh(path, steps, max_points):
     path = Path(path)
     meta = json.loads((path/'scene.json').read_text())
@@ -112,7 +121,7 @@ def train_mesh(path, steps, max_points):
         return rasterization(means=parameters['means'], quats=parameters['quats'], scales=parameters['scales'].exp(),
             opacities=parameters['opacities'].sigmoid(), colors=torch.cat([parameters['sh0'], shN], 1),
             sh_degree=degree, viewmats=view, Ks=K if camera_K is None else camera_K, width=size, height=size, packed=False, absgrad=True, render_mode='RGB+ED')
-    point_budget=300000 if meta.get('appearance_audit') else 180000
+    point_budget=300000 if meta.get('appearance_audit') or meta.get('external_reference_audit') else 180000
     log = []
     for step in range(steps):
         degree = min(3, step//300)
@@ -124,11 +133,11 @@ def train_mesh(path, steps, max_points):
                 matte_mask=t(np.isin(source['component_ids'][nearest],matte_components)).bool()
                 anchor_colors=t((source['rgb'][nearest]/255-.5)/.28209479177387814)
             last_anchor_step = step
-        i = step % len(frames)
+        i = training_frame_index(frames,step)
         rendered, alpha, info = render(poses[i], t(frames[i].get('K',meta['K']))[None])
         valid = masks[i]
         weight = confidences[i][valid]
-        rgb_loss = confidence_loss((rendered[0, ..., :3][valid]-targets[i][0][valid]).abs().mean(-1), weight)
+        rgb_loss = confidence_loss((rendered[0, ..., :3][valid]-targets[i][0][valid]).abs().mean(-1), weight)*float(frames[i].get('rgb_weight',1.))
         supported = valid & (alpha[0, ..., 0].detach() > .1)
         depth_loss = (confidence_loss((rendered[0, ..., 3].clamp_min(.05).log()-depths[i].clamp_min(.05).log()).abs()[supported], confidences[i][supported])
                       if supported.any() else rgb_loss*0)
@@ -221,7 +230,7 @@ def train_mesh(path, steps, max_points):
         valid = mask & (cpu(alpha[0, ..., 0]) > .5)
         np.save(path/f'heldout_alpha_{i:03d}.npy', cpu(alpha[0, ..., 0]))
         evaluation.append({'camera': i, 'target': frame['target'], 'valid_fraction': float(valid.mean()),
-            'rgb_l1': float(np.abs(predicted[mask]-target[mask]).mean()),
+            'rgb_l1': float(np.abs(predicted[mask]-target[mask]).mean()) if frame.get('photographic_ground_truth',True) else None,
             'alpha_below_half_on_target': float(((cpu(alpha[0, ..., 0]) < .5) & mask).sum()/max(mask.sum(), 1)),
             'alpha_below_95_on_target': float(((cpu(alpha[0, ..., 0]) < .95) & mask).sum()/max(mask.sum(), 1)),
             'depth_relative_error': float((np.abs(cpu(result[0, ..., 3])[valid]-depth[valid])/depth[valid]).mean()) if valid.any() else None})

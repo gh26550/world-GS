@@ -23,7 +23,11 @@ class AppearanceModels:
         self.detector=AutoModelForZeroShotObjectDetection.from_pretrained('IDEA-Research/grounding-dino-tiny').to('cuda')
         print('Appearance models ready: depth ControlNet + IP-Adapter',flush=True)
 
-    def generate(self,prompt,guide,known,depth,style,index,attempt,regions=None,object_styles=None):
+    def generate(self,prompt,guide,known,depth,style,index,attempt,regions=None,object_styles=None,whole_view=False):
+        if whole_view:
+            self.pipe.set_ip_adapter_scale(.5)
+            try:return self._sample(prompt,guide,np.zeros_like(known),depth,style,index,attempt,whole_view=True)
+            finally:self.pipe.set_ip_adapter_scale(.2)
         if regions is None:
             return self._sample(prompt,guide,known,depth,style,index,attempt)
         rgb=guide.copy()
@@ -40,12 +44,12 @@ class AppearanceModels:
         rgb[known]=guide[known]
         return rgb
 
-    def _sample(self,prompt,guide,known,depth,style,index,attempt,negative_extra=""):
+    def _sample(self,prompt,guide,known,depth,style,index,attempt,negative_extra="",whole_view=False):
         image=self.pipe(prompt=prompt,
             negative_prompt='illustration, cartoon, plastic toy, distorted furniture, duplicate furniture, warped walls, fisheye, text, watermark, '+negative_extra,
             image=Image.fromarray(guide),mask_image=Image.fromarray(np.uint8(~known)*255),
             control_image=Image.fromarray(depth_condition(depth)).convert('RGB'),ip_adapter_image=style,
-            width=guide.shape[1],height=guide.shape[0],strength=.75-.1*attempt,num_inference_steps=30,guidance_scale=6.,
+            width=guide.shape[1],height=guide.shape[0],strength=(.95-.05*attempt if whole_view else .75-.1*attempt),num_inference_steps=30,guidance_scale=6.,
             controlnet_conditioning_scale=1.2+.3*attempt,
             generator=self.torch.Generator('cuda').manual_seed(self.seed+index*17+attempt)).images[0]
         rgb=np.asarray(image).copy()

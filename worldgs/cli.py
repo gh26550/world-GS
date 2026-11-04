@@ -38,6 +38,17 @@ def main():
     photo.add_argument('--size',type=int,default=512)
     photo.add_argument('--pilot-views',type=int)
     photo.add_argument('--resume',action='store_true')
+    photo.add_argument('--whole-view',action='store_true',help='Regenerate entire novel view from the proxy; no source-photo projection or immutable background')
+    guides=sub.add_parser('prepare-photographs',help='Prepare unprojected camera proxy guides and two-image generation prompts')
+    guides.add_argument('path')
+    guides.add_argument('--output',required=True)
+    proxy=sub.add_parser('complete-proxy',help='Ground missing window and rug from the source image and rerender proxy guides')
+    proxy.add_argument('path')
+    proxy.add_argument('--output',required=True)
+    external=sub.add_parser('import-photographs',help='Validate a two-image generated reference manifest and prepare GS training')
+    external.add_argument('path')
+    external.add_argument('--manifest',required=True)
+    external.add_argument('--output',required=True)
     repair = sub.add_parser('refine-depth', help='Re-estimate depth and rebuild seams using existing expand keyframe images')
     repair.add_argument('path')
     repair.add_argument('--output', required=True)
@@ -75,6 +86,15 @@ def main():
     elif command == 'synthesize-appearance':
         from .appearance import synthesize_appearance
         synthesize_appearance(**args)
+    elif command == 'prepare-photographs':
+        from .external_references import prepare_photograph_guides
+        prepare_photograph_guides(**args)
+    elif command == 'complete-proxy':
+        from .proxy_completion import complete_proxy
+        complete_proxy(**args)
+    elif command == 'import-photographs':
+        from .external_references import import_reference_pack
+        import_reference_pack(**args)
     elif command == 'refine-depth':
         from .expansion import repair_depth_scene
         repair_depth_scene(**args)

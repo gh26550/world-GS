@@ -79,7 +79,7 @@ def save_references(folder,prompt,seed,size,mesh,components,owners,job):
         ray=points['xyz'][ids]-pose[:3,3]
         distance=np.linalg.norm(ray,axis=1)
         incidence=np.abs((points['normals'][ids]*ray).sum(1)/distance)
-        weight=incidence/np.maximum(distance,.3)
+        weight=incidence/np.maximum(distance,.3)*max(.01,float(frame.get('rgb_weight',1.)))
         better=weight>scores[ids]
         ids=ids[better]
         x,y=uv[ids].T

@@ -19,6 +19,8 @@ def validate_teacher(path):
     validate_front_audit(path,meta)
     from .appearance import validate_appearance
     validate_appearance(path,meta)
+    from .external_references import validate_external
+    validate_external(path,meta)
     if hashlib.sha256((path/'scene_mesh.glb').read_bytes()).hexdigest() != meta['mesh_file_sha256']:
         raise ValueError('Exported teacher mesh changed; regenerate references before training')
     geometry = np.load(path/'mesh_geometry.npz')
