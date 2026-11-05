@@ -79,3 +79,11 @@ class ReferenceRebuildTest(unittest.TestCase):
   with self.assertRaises(ValueError):training_view_source(Path('/tmp'),f,row)
   target,image=training_view_source(Path('/tmp'),f,row,True)
   self.assertEqual(target['rgb_weight'],0.);self.assertEqual(image,Path('/tmp/references/left/proxy.png'));self.assertNotIn('rgb_weight',f)
+
+ def test_review_explains_region_failure_and_training_exclusion(self):
+  from worldgs.reference_review import write_review
+  with tempfile.TemporaryDirectory() as tmp:
+   check=dict(passed=False,policy=dict(depth_recall_min=.55,rgb_recall_min=.6),global_check=dict(passed=True,depth_recall=.9),components=[dict(group='window',passed=False,depth_recall=.476,rgb_recall=1.)])
+   write_review(Path(tmp),[dict(id='overhead_00')],[dict(image='candidate.png',assessment=check)])
+   page=(Path(tmp)/'review.html').read_text(encoding='utf-8')
+   for text in ['窓','47.6%','55.0%','RGBは学習から除外','画像が実際に破綻していると断定']:self.assertIn(text,page)

@@ -93,10 +93,8 @@ def collect_candidates(folder,renderer,frames,runtime,recipe):
     return results
 
 def write_review(folder,frames,results):
-    cards=[]
-    for f,row in zip(frames,results):
-        label='幾何検査合格' if row['assessment']['passed'] else '要確認';cards.append(f'<h2>{f["id"]}: {label}</h2><div><img src="references/{f["id"]}/proxy.png"><img src="{row["image"]}"></div>')
-    (folder/'review.html').write_text('<!doctype html><meta charset="utf-8"><title>全周カメラの参照生成</title><style>body{font:16px sans-serif;margin:24px}div{display:flex;gap:12px}img{width:45%;max-width:512px}</style><h1>全周カメラの参照生成と幾何検査</h1><p>左：共通メッシュ、右：同じカメラで生成した画像。物体検出器の分類名は合否に使わない。幾何検査だけでは意味的な正しさを保証しない。</p>'+''.join(cards),encoding='utf-8')
+    from .reference_review import write_review as explain_review
+    explain_review(folder,frames,results)
 
 def training_view_source(folder,frame,row,allow_geometry_only=False):
     frame=dict(frame)
