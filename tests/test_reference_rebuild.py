@@ -72,3 +72,10 @@ class ReferenceRebuildTest(unittest.TestCase):
   identity=dict(id='same',transform_matrix=np.eye(4).tolist());opposite=np.eye(4);opposite[:3,:3]=np.diag([-1,1,-1])
   other=dict(id='opposite',transform_matrix=opposite.tolist());entries=[dict(frame=other),dict(frame=identity)]
   self.assertEqual(closest_accepted(identity,entries)['frame']['id'],'same');self.assertIsNone(closest_accepted(identity,[]))
+
+ def test_rejected_rgb_is_disabled_in_production_export(self):
+  from worldgs.reference_pipeline import training_view_source
+  f=dict(id='left',file_path='left.png');row=dict(image='bad.png',assessment=dict(passed=False))
+  with self.assertRaises(ValueError):training_view_source(Path('/tmp'),f,row)
+  target,image=training_view_source(Path('/tmp'),f,row,True)
+  self.assertEqual(target['rgb_weight'],0.);self.assertEqual(image,Path('/tmp/references/left/proxy.png'));self.assertNotIn('rgb_weight',f)

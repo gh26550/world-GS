@@ -25,6 +25,11 @@ def validate_reference_dataset(folder,meta):
     if {r['file_path'] for r in audit['views']}!={f['file_path'] for f in meta['frames']}:raise ValueError('Reference audit missing a training image')
     for row in audit['views']:
         if sha(folder/row['file_path'])!=row['sha256']:raise ValueError('Reference training image changed')
+    if 'rgb_weights' in audit and audit['rgb_weights']!={f['file_path']:f.get('rgb_weight',1.) for f in meta['frames']}:raise ValueError('RGB supervision weights changed')
+    for row in audit.get('geometry_only',[]):
+        if audit['rgb_weights'].get(row['file_path'])!=0.:raise ValueError('Rejected photograph must have RGB disabled')
+        for name,digest in row['evidence'].items():
+            if sha(folder/name)!=digest:raise ValueError('Rejected evidence changed')
     for row in audit['selected']:
         if not row['assessment']['passed']:raise ValueError('Rejected reference cannot be trained')
         for name,digest in row['evidence'].items():
@@ -93,17 +98,27 @@ def write_review(folder,frames,results):
         label='幾何検査合格' if row['assessment']['passed'] else '要確認';cards.append(f'<h2>{f["id"]}: {label}</h2><div><img src="references/{f["id"]}/proxy.png"><img src="{row["image"]}"></div>')
     (folder/'review.html').write_text('<!doctype html><meta charset="utf-8"><title>全周カメラの参照生成</title><style>body{font:16px sans-serif;margin:24px}div{display:flex;gap:12px}img{width:45%;max-width:512px}</style><h1>全周カメラの参照生成と幾何検査</h1><p>左：共通メッシュ、右：同じカメラで生成した画像。物体検出器の分類名は合否に使わない。幾何検査だけでは意味的な正しさを保証しない。</p>'+''.join(cards),encoding='utf-8')
 
-def package_dataset(src,folder,original,mesh,layout,owners,frames,results):
+def training_view_source(folder,frame,row,allow_geometry_only=False):
+    frame=dict(frame)
+    if row['assessment']['passed']:return frame,folder/row['image']
+    if not allow_geometry_only:raise ValueError('Rejected photograph cannot be an RGB teacher')
+    frame.update(rgb_weight=0.,reference_source='Exact mesh depth/opacity only; rejected photograph excluded')
+    return frame,folder/'references'/frame['id']/'proxy.png'
+
+
+def package_dataset(src,folder,original,mesh,layout,owners,frames,results,allow_geometry_only=False):
     from .learned_references import save_references
     from .front_alignment import audit_front
     from .appearance import projection_fingerprint
     source={k:v for k,v in original['frames'][0].items() if k in ('K','transform_matrix','target')};source.update(file_path='source_anchor.png',split='view');shutil.copy2(folder/'source_front.png',folder/source['file_path']);training=[source]
-    for f,row in zip(frames,results):shutil.copy2(folder/row['image'],folder/f['file_path']);training.append(f)
+    for f,row in zip(frames,results):
+        target,image=training_view_source(folder,f,row,allow_geometry_only);shutil.copy2(image,folder/target['file_path']);training.append(target)
     job=json.loads((src/'render_job.json').read_text());job.update(folder=str(folder),frames=list(training))
     for i,f in enumerate(frames):
         probe=dict(f,file_path=f'probe_{i:02d}.png',split='heldout',photographic_ground_truth=False);shutil.copy2(folder/'references'/f['id']/'proxy.png',folder/probe['file_path']);job['frames'].append(probe)
     write(folder/'render_job.json',job);meta=save_references(folder,original['prompt'],original['seed'],original['size'],mesh,layout['components'],owners,job);meta.update(mode='image_room_mesh_v12',front_alignment='front_alignment.json',reference_v2_audit='reference_audit.json',training_geometry_policy='shared_layout_local_detail_v17',reference_source='WorldMesh-inspired multi-camera local mesh/depth/boundary conditioned photographs',rgb_evaluation_is_independent=False)
-    audit=dict(complete=True,passed=True,mesh_sha256=sha(folder/'scene_mesh.glb'),source_sha256=sha(folder/'source_front.png'),projection_sha256=projection_fingerprint(meta),views=[dict(file_path=f['file_path'],sha256=sha(folder/f['file_path'])) for f in training],selected=results)
+    audit=dict(complete=True,passed=True,mesh_sha256=sha(folder/'scene_mesh.glb'),source_sha256=sha(folder/'source_front.png'),projection_sha256=projection_fingerprint(meta),views=[dict(file_path=f['file_path'],sha256=sha(folder/f['file_path'])) for f in training],selected=[r for r in results if r['assessment']['passed']],geometry_only=[dict(camera=f['id'],file_path=f['file_path'],assessment=r['assessment'],evidence=r['evidence']) for f,r in zip(frames,results) if not r['assessment']['passed']],policy='accepted_photos_with_mesh_only_rejected_views' if allow_geometry_only else 'all_photographs_passed',rgb_weights={f['file_path']:f.get('rgb_weight',1.) for f in training},all_photographs_passed=all(r['assessment']['passed'] for r in results))
+    meta['all_photographs_passed']=audit['all_photographs_passed']
     write(folder/'reference_audit.json',audit);write(folder/'scene.json',meta);audit_front(folder);validate_reference_dataset(folder,meta);return meta
 
 def run_reference_experiment(path,output,resume=False,prepare_only=False,attempts=2,model='controlnet',fov=60,train_steps=0,max_points=100000):
@@ -145,4 +160,34 @@ def evaluate_reference_experiment(path,output,train_steps=0,max_points=100000):
     if train_steps:
         from .train import train
         return train(folder,train_steps,max_points)
+    return meta
+
+
+def export_accepted_references(path,output,train_steps=3000,max_points=180000):
+    """Explicit production export: rejected RGB never supervises GS appearance."""
+    old=Path(path).resolve();folder=Path(output).resolve();recipe=json.loads((old/'experiment.json').read_text());assessment=json.loads((old/'assessment.json').read_text())
+    if old==folder or old in folder.parents or folder in old.parents:raise ValueError('Use separate sibling output')
+    if folder.exists() and any(folder.iterdir()):raise FileExistsError('Use empty production output')
+    if not assessment['complete']:raise ValueError('Collect every planned view before production export')
+    results=assessment['views'];passed=sum(r['assessment']['passed'] for r in results)
+    if passed<8:raise ValueError('Production export needs at least eight accepted translated photographs')
+    src=Path(recipe['source']);original=json.loads((src/'scene.json').read_text());mesh,layout,owners=load_proxy(src)
+    if sha(src/'scene_mesh.glb')!=recipe['mesh_sha256'] or sha(src/'source_front.png')!=recipe['source_sha256']:raise ValueError('Source changed')
+    initialize_experiment(src,folder,recipe,False);shutil.copytree(old/'references',folder/'references');shutil.copy2(old/'appearance.png',folder/'appearance.png');write(folder/'assessment.json',assessment);write(folder/'origin.json',dict(experiment=str(old),accepted=passed,total=len(results),policy='Rejected RGB excluded; planned mesh geometry retained'))
+    frames=recipe['cameras'];renderer=MeshRenderer(mesh,layout['components'],owners)
+    from .reference_coverage import scaled_intrinsics
+    observations={i:[] for i,c in enumerate(layout['components']) if c.get('material')=='generated_asset'}
+    for f,row in zip(frames,results):
+        if not row['assessment']['passed']:continue
+        hit=renderer.render(scaled_intrinsics(f['K'],recipe['size'],96),np.asarray(f['transform_matrix']),96);valid=hit['faces']>=0;visible_owners=owners[hit['faces'][valid]]
+        for owner in observations:
+            if np.count_nonzero(visible_owners==owner)>=4:observations[owner].append(f)
+    coverage={layout['components'][owner]['name']:dict(views=len(items),translated_pair=any(np.linalg.norm(np.asarray(a['transform_matrix'])[:3,3]-np.asarray(b['transform_matrix'])[:3,3])>.25 for a in items for b in items)) for owner,items in observations.items()}
+    write(folder/'photographic_object_coverage.json',coverage)
+    if not all(row['translated_pair'] for row in coverage.values()):raise ValueError('An object lacks two translated accepted photographic views')
+    write_review(folder,frames,results);meta=package_dataset(src,folder,original,mesh,layout,owners,frames,results,allow_geometry_only=True)
+    write(folder/'status.json',dict(stage='references_ready',accepted_photos=passed,total=len(results),all_photographs_passed=passed==len(results)))
+    if train_steps:
+        from .train import train
+        train(folder,train_steps,max_points)
     return meta

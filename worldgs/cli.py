@@ -47,6 +47,11 @@ def main():
     reevaluate.add_argument('--output',required=True)
     reevaluate.add_argument('--train-steps',type=int,default=0)
     reevaluate.add_argument('--max-points',type=int,default=100000)
+    production=sub.add_parser('reference-export',help='Export accepted photographs and mesh-only supervision for rejected views')
+    production.add_argument('path')
+    production.add_argument('--output',required=True)
+    production.add_argument('--train-steps',type=int,default=3000)
+    production.add_argument('--max-points',type=int,default=180000)
     experiment=sub.add_parser('reference-run',help='WorldMesh-inspired multi-camera reference collection, geometric assessment and GS export')
     experiment.add_argument('path')
     experiment.add_argument('--output',required=True)
@@ -123,6 +128,9 @@ def main():
     elif command == 'reference-evaluate':
         from .reference_pipeline import evaluate_reference_experiment
         evaluate_reference_experiment(**args)
+    elif command == 'reference-export':
+        from .reference_pipeline import export_accepted_references
+        export_accepted_references(**args)
     elif command == 'reference-run':
         from .reference_pipeline import run_reference_experiment
         run_reference_experiment(**args)
