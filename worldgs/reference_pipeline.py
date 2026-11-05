@@ -3,7 +3,7 @@ import hashlib,json,shutil
 from pathlib import Path
 import numpy as np
 from PIL import Image
-from .reference_cameras import worldmesh_cameras,closest_accepted
+from .reference_cameras import worldmesh_cameras,closest_accepted,dense_camera_plan
 from .reference_geometry import assess_reference
 from .local_runtime import LocalRuntime
 from .local_room import load_proxy
@@ -35,10 +35,14 @@ def validate_reference_dataset(folder,meta):
         for name,digest in row['evidence'].items():
             if sha(folder/name)!=digest:raise ValueError('Reference evidence changed: '+name)
 
-def prepare_reference_experiment(src,folder,attempts,model,fov):
+def prepare_reference_experiment(src,folder,attempts,model,fov,rgb_target=None):
     from .appearance_reference import appearance_atlas
     original=json.loads((src/'scene.json').read_text());mesh,layout,owners=load_proxy(src);frames=worldmesh_cameras(layout['shapes'],original['size'],fov);runtime=LocalRuntime(folder/'logs',image_model=model);models=runtime.preflight()
+    if rgb_target is not None:
+        if rgb_target<26:raise ValueError('RGB target includes source image and must be at least 26')
+        frames=dense_camera_plan(layout['shapes'],original['size'],int(np.ceil((rgb_target-1)*1.6)),fov)
     recipe=dict(version=4,camera_policy='worldmesh_perimeter16_overhead8',model_profile=model,source=str(src),mesh_sha256=sha(src/'scene_mesh.glb'),source_sha256=sha(src/'source_front.png'),size=original['size'],seed=original['seed'],attempts=attempts,models=models,cameras=frames,validation='reference_geometry_v3_physical_groups')
+    if rgb_target is not None:recipe.update(version=5,camera_policy='worldmesh_plus_safe_multiheight_multidistance',rgb_target=rgb_target,target_includes_source=True)
     return original,mesh,layout,owners,frames,runtime,recipe
 
 def initialize_experiment(src,folder,recipe,resume):
@@ -89,7 +93,10 @@ def collect_candidates(folder,renderer,frames,runtime,recipe):
                 if rows[-1]['assessment']['passed']:break
             good=[r for r in rows if r['assessment']['passed']];selected=max(good or rows,key=lambda r:r['assessment']['score']);results.append(selected)
             if selected['assessment']['passed']:accepted.append(dict(frame=f,row=selected))
-            write(folder/'assessment.json',dict(complete=len(results)==len(frames),ready=len(results)==len(frames) and all(r['assessment']['passed'] for r in results),views=results));print(f"Camera {f['id']}: geometry_passed={selected['assessment']['passed']}",flush=True)
+            reached=recipe.get('rgb_target') is not None and len(accepted)+1>=recipe['rgb_target']
+            complete=reached or len(results)==len(frames)
+            write(folder/'assessment.json',dict(complete=complete,ready=reached if recipe.get('rgb_target') else complete and all(r['assessment']['passed'] for r in results),rgb_teacher_count=len(accepted)+1,rgb_target=recipe.get('rgb_target'),planned_cameras=len(frames),attempted_cameras=len(results),views=results));print(f"Camera {f['id']}: geometry_passed={selected['assessment']['passed']} RGB teachers={len(accepted)+1}",flush=True)
+            if reached:break
     return results
 
 def write_review(folder,frames,results):
@@ -119,14 +126,32 @@ def package_dataset(src,folder,original,mesh,layout,owners,frames,results,allow_
     meta['all_photographs_passed']=audit['all_photographs_passed']
     write(folder/'reference_audit.json',audit);write(folder/'scene.json',meta);audit_front(folder);validate_reference_dataset(folder,meta);return meta
 
-def run_reference_experiment(path,output,resume=False,prepare_only=False,attempts=2,model='controlnet',fov=60,train_steps=0,max_points=100000):
+def reuse_reference_evidence(old,folder,recipe):
+    old=Path(old);previous=json.loads((old/'experiment.json').read_text())
+    for key in ['mesh_sha256','source_sha256','seed','size','model_profile']:
+        if previous[key]!=recipe[key]:raise ValueError('Cannot reuse different reference evidence: '+key)
+    for frame in previous['cameras']:
+        match=next((f for f in recipe['cameras'] if f['id']==frame['id']),None)
+        if match!=frame:raise ValueError('Cannot reuse changed camera '+frame['id'])
+        source=old/'references'/frame['id'];target=folder/'references'/frame['id']
+        if target.exists():continue
+        if source.exists():shutil.copytree(source,target)
+    write(folder/'reused_evidence.json',dict(source=str(old),policy='Exact same source, mesh, cameras and local model; cached evidence hashes verified during collection'))
+
+
+def run_reference_experiment(path,output,resume=False,prepare_only=False,attempts=2,model='controlnet',fov=60,train_steps=0,max_points=100000,rgb_target=None,reuse_references=None):
     src=Path(path).resolve();folder=Path(output).resolve()
     if src==folder or src in folder.parents or folder in src.parents:raise ValueError('Use a separate sibling output')
     if not 1<=attempts<=3:raise ValueError('Use 1..3 attempts per camera')
-    original,mesh,layout,owners,frames,runtime,recipe=prepare_reference_experiment(src,folder,attempts,model,fov);initialize_experiment(src,folder,recipe,resume);renderer=MeshRenderer(mesh,layout['components'],owners);render_benchmark(folder,renderer,frames,original['size'])
+    original,mesh,layout,owners,frames,runtime,recipe=prepare_reference_experiment(src,folder,attempts,model,fov,rgb_target);initialize_experiment(src,folder,recipe,resume)
+    if reuse_references:reuse_reference_evidence(reuse_references,folder,recipe)
+    renderer=MeshRenderer(mesh,layout['components'],owners);render_benchmark(folder,renderer,frames,original['size'])
     if prepare_only:write(folder/'status.json',dict(stage='prepared',cameras=len(frames)));return recipe
     try:
-        results=collect_candidates(folder,renderer,frames,runtime,recipe);write_review(folder,frames,results)
+        results=collect_candidates(folder,renderer,frames,runtime,recipe);used_frames=frames[:len(results)];write_review(folder,used_frames,results)
+        if rgb_target is not None:
+            write(folder/'status.json',dict(stage='rgb_target_ready' if sum(r['assessment']['passed'] for r in results)+1>=rgb_target else 'rgb_target_unmet',rgb_teachers=sum(r['assessment']['passed'] for r in results)+1,rgb_target=rgb_target,attempted_cameras=len(results),planned_cameras=len(frames)))
+            return results
         if not all(r['assessment']['passed'] for r in results):write(folder/'status.json',dict(stage='review_required',trainable=False,passed=sum(r['assessment']['passed'] for r in results),total=len(frames)));return results
         meta=package_dataset(src,folder,original,mesh,layout,owners,frames,results);write(folder/'status.json',dict(stage='references_ready',trainable=True,cameras=len(frames)))
         if train_steps:
@@ -168,11 +193,13 @@ def export_accepted_references(path,output,train_steps=3000,max_points=180000):
     if folder.exists() and any(folder.iterdir()):raise FileExistsError('Use empty production output')
     if not assessment['complete']:raise ValueError('Collect every planned view before production export')
     results=assessment['views'];passed=sum(r['assessment']['passed'] for r in results)
+    if recipe.get('rgb_target') and passed+1!=recipe['rgb_target']:raise ValueError('Requested RGB teacher target has not been reached exactly')
     if passed<8:raise ValueError('Production export needs at least eight accepted translated photographs')
     src=Path(recipe['source']);original=json.loads((src/'scene.json').read_text());mesh,layout,owners=load_proxy(src)
     if sha(src/'scene_mesh.glb')!=recipe['mesh_sha256'] or sha(src/'source_front.png')!=recipe['source_sha256']:raise ValueError('Source changed')
     initialize_experiment(src,folder,recipe,False);shutil.copytree(old/'references',folder/'references');shutil.copy2(old/'appearance.png',folder/'appearance.png');write(folder/'assessment.json',assessment);write(folder/'origin.json',dict(experiment=str(old),accepted=passed,total=len(results),policy='Rejected RGB excluded; planned mesh geometry retained'))
-    frames=recipe['cameras'];renderer=MeshRenderer(mesh,layout['components'],owners)
+    frames=recipe['cameras'][:len(results)];renderer=MeshRenderer(mesh,layout['components'],owners)
+    if [f['id'] for f in frames]!=[row['camera'] for row in results]:raise ValueError('Collected camera order differs from plan')
     from .reference_coverage import scaled_intrinsics
     observations={i:[] for i,c in enumerate(layout['components']) if c.get('material')=='generated_asset'}
     for f,row in zip(frames,results):

@@ -48,6 +48,11 @@ class ReferenceRebuildTest(unittest.TestCase):
    with patch('worldgs.layout_consistency.layout_contract',return_value={'objects':[]}),patch('worldgs.room_verification.camera_context',return_value=('empty room',[])),patch('worldgs.reference_pipeline.assess_reference',side_effect=checks):
     results=collect_candidates(folder,Renderer(),frames,runtime,dict(seed=1,size=64,attempts=1,mesh_sha256='mesh',source_sha256='source'))
    self.assertEqual(runtime.count,4);self.assertEqual(len(results),4);self.assertFalse(json.loads((folder/'assessment.json').read_text())['ready'])
+   with patch('worldgs.layout_consistency.layout_contract',return_value={'objects':[]}),patch('worldgs.room_verification.camera_context',return_value=('empty room',[])):
+    limited=collect_candidates(folder,Renderer(),frames,runtime,dict(seed=1,size=64,attempts=1,mesh_sha256='mesh',source_sha256='source',rgb_target=3))
+   self.assertEqual(len(limited),3);self.assertEqual(runtime.count,4)
+   audit=json.loads((folder/'assessment.json').read_text());self.assertTrue(audit['complete']);self.assertTrue(audit['ready']);self.assertEqual(audit['rgb_teacher_count'],3)
+
  def test_unresolved_experiment_never_exports_training_dataset(self):
   with tempfile.TemporaryDirectory() as tmp:
    p=Path(tmp);out=p/'out';out.mkdir();results=[dict(assessment=dict(passed=False))]
@@ -87,3 +92,12 @@ class ReferenceRebuildTest(unittest.TestCase):
    write_review(Path(tmp),[dict(id='overhead_00')],[dict(image='candidate.png',assessment=check)])
    page=(Path(tmp)/'review.html').read_text(encoding='utf-8')
    for text in ['窓','47.6%','55.0%','RGBは学習から除外','画像が実際に破綻していると断定']:self.assertIn(text,page)
+
+ def test_dense_cameras_are_distinct_safe_and_preserve_baseline(self):
+  from worldgs.reference_cameras import worldmesh_cameras,dense_camera_plan
+  from worldgs.room_cameras import safe_eye
+  shapes=[dict(min=[-3,-1.5,-3],max=[3,1.5,3])];old=json.dumps(shapes);frames=dense_camera_plan(shapes,64,64);base=worldmesh_cameras(shapes,64)
+  self.assertEqual(len(frames),64);self.assertEqual(frames[:len(base)],base);self.assertEqual(json.dumps(shapes),old)
+  self.assertEqual(len({f['id'] for f in frames}),64)
+  for f in frames:self.assertTrue(safe_eye(np.array(f['transform_matrix'])[:3,3],shapes[0],[]))
+  extra=frames[len(base):];self.assertGreater(len({f['height_above_floor'] for f in extra}),1);self.assertGreater(len({f['room_radius_scale'] for f in extra}),1)

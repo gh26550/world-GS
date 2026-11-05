@@ -62,6 +62,8 @@ def main():
     experiment.add_argument('--fov',type=float,default=60)
     experiment.add_argument('--train-steps',type=int,default=0)
     experiment.add_argument('--max-points',type=int,default=100000)
+    experiment.add_argument('--rgb-target',type=int,help='Exact number of accepted RGB teachers including the initial photograph')
+    experiment.add_argument('--reuse-references',help='Reuse hash-verified evidence from identical earlier camera poses')
     local=sub.add_parser('generate-room-views',help='Local whole-room camera/depth/photograph generation, with automatic verification')
     local.add_argument('path')
     local.add_argument('--output',required=True)
