@@ -42,6 +42,21 @@ def main():
     guides=sub.add_parser('prepare-photographs',help='Prepare unprojected camera proxy guides and two-image generation prompts')
     guides.add_argument('path')
     guides.add_argument('--output',required=True)
+    reevaluate=sub.add_parser('reference-evaluate',help='Reassess saved reference evidence into a separate dataset without generating images')
+    reevaluate.add_argument('path')
+    reevaluate.add_argument('--output',required=True)
+    reevaluate.add_argument('--train-steps',type=int,default=0)
+    reevaluate.add_argument('--max-points',type=int,default=100000)
+    experiment=sub.add_parser('reference-run',help='New four-camera reference collection, geometric assessment and GS export')
+    experiment.add_argument('path')
+    experiment.add_argument('--output',required=True)
+    experiment.add_argument('--resume',action='store_true')
+    experiment.add_argument('--prepare-only',action='store_true')
+    experiment.add_argument('--attempts',type=int,default=2)
+    experiment.add_argument('--model',choices=['controlnet','base','distilled'],default='controlnet')
+    experiment.add_argument('--fov',type=float,default=70)
+    experiment.add_argument('--train-steps',type=int,default=0)
+    experiment.add_argument('--max-points',type=int,default=100000)
     local=sub.add_parser('generate-room-views',help='Local whole-room camera/depth/photograph generation, with automatic verification')
     local.add_argument('path')
     local.add_argument('--output',required=True)
@@ -105,6 +120,12 @@ def main():
     elif command == 'prepare-photographs':
         from .external_references import prepare_photograph_guides
         prepare_photograph_guides(**args)
+    elif command == 'reference-evaluate':
+        from .reference_pipeline import evaluate_reference_experiment
+        evaluate_reference_experiment(**args)
+    elif command == 'reference-run':
+        from .reference_pipeline import run_reference_experiment
+        run_reference_experiment(**args)
     elif command == 'generate-room-views':
         from .local_room import generate_room_views
         generate_room_views(**args)

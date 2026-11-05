@@ -135,7 +135,7 @@ def generate_room_views(path,output,perimeter=16,overhead=8,adaptive=8,fov=75,pi
     except BaseException as error:status('local_failed',success=False,error=str(error),completed=len(accepted));raise
 
 
-def generate_local_scene(prompt,output,size=512,views=16,seed=0,front_image=None,room_size=None,resume=False,planner_model=None):
+def create_local_proxy(prompt,output,size=512,views=16,seed=0,front_image=None,room_size=None,resume=False,planner_model=None):
     from .learned_scene import generate_learned_scene
     from .proxy_completion import complete_proxy
     folder=Path(output).resolve();front_folder=folder.with_name(folder.name+'_front');scaffold=folder.with_name(folder.name+'_scaffold');completed=folder.with_name(folder.name+'_proxy')
@@ -150,4 +150,10 @@ def generate_local_scene(prompt,output,size=512,views=16,seed=0,front_image=None
             write(front_folder/'request.json',front_request)
     generate_learned_scene(prompt,scaffold,size,views,seed,room_size,resume,planner_model,image_room=True,front_image=front_image)
     if not (completed/'scene.json').exists():complete_proxy(scaffold,completed)
-    return generate_room_views(completed,folder,perimeter=max(8,views),resume=resume)
+    return completed
+
+
+def generate_local_scene(prompt,output,size=512,views=16,seed=0,front_image=None,room_size=None,resume=False,planner_model=None):
+    from .reference_pipeline import run_reference_experiment
+    proxy=create_local_proxy(prompt,output,size,views,seed,front_image,room_size,resume,planner_model)
+    return run_reference_experiment(proxy,output,resume=resume)

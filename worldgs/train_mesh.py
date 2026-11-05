@@ -121,7 +121,7 @@ def train_mesh(path, steps, max_points):
         return rasterization(means=parameters['means'], quats=parameters['quats'], scales=parameters['scales'].exp(),
             opacities=parameters['opacities'].sigmoid(), colors=torch.cat([parameters['sh0'], shN], 1),
             sh_degree=degree, viewmats=view, Ks=K if camera_K is None else camera_K, width=size, height=size, packed=False, absgrad=True, render_mode='RGB+ED')
-    point_budget=300000 if meta.get('appearance_audit') or meta.get('external_reference_audit') or meta.get('local_room_audit') else 180000
+    point_budget=300000 if meta.get('appearance_audit') or meta.get('external_reference_audit') or meta.get('local_room_audit') or meta.get('reference_v2_audit') else 180000
     log = []
     for step in range(steps):
         degree = min(3, step//300)
