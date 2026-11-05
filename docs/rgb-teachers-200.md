@@ -15,6 +15,13 @@ WorldMesh型の既存カメラを先頭に保持し、高さ1.15/1.6/2.15m、部
 
 カメラ計画とモデル条件はexperiment.json。進捗とRGB採用数はassessment.json。学習時には初期写真1＋採用生成写真199に加え、拒否カメラの形状専用フレームが入る場合がある。このため総フレーム数は200を超え得るがRGB教師は200枚である。
 
-この設定はreference-runで明示的に使う。通常のgenerateの既定25視点を無断で200へ変更しない。枚数増加だけで元画像の忠実度や形状精度が上がるとは限らず、教師間の不一致が増える可能性もある。
+この設定は--rgb-targetで明示的に指定する。通常のgenerateの既定25視点を無断で200へ変更しない。枚数増加だけで元画像の忠実度や形状精度が上がるとは限らず、教師間の不一致が増える可能性もある。
 
 ControlNetとDepthProは専用のローカルプロセスでモデルを再利用する。要求ごとにGPUからCPUへ戻してGPUメモリを解放し、次の処理へ渡す。毎回のモデル読込を省くが、seed・画像生成条件・深度条件・採否基準は変更しない。このPCでは同一の画像生成要求2回と深度要求を旧処理と比較し、出力が完全一致した。ログはlogs/*.server.log。
+
+プロンプトから新しく始める場合も、RGB枚数を直接指定できる。
+```bash
+./run.sh generate --mode room-local --prompt 'A cozy living room with a sofa, two bookshelves and a wooden table' --output runs/my_rgb200 --seed 106 --rgb-target 200
+./run.sh reference-export runs/my_rgb200 --output runs/my_rgb200_production --train-steps 24000 --max-points 180000
+```
+--views 200は採用RGB枚数の指定ではないため、--rgb-target 200を使用する。

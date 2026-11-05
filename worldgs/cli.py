@@ -15,6 +15,7 @@ def main():
     generate.add_argument('--size', type=int, default=512)
     generate.add_argument('--views', type=int, default=24)
     generate.add_argument('--seed', type=int, default=0)
+    generate.add_argument('--rgb-target',type=int,help='room-local: accepted RGB teacher count including the initial image')
     generate.add_argument('--demo', action='store_true', help='Synthetic integration fixture; does not generate images from the prompt')
     generate.add_argument('--mode', choices=['room-local','photo-room', 'image-room', 'learned', 'scene', 'expand', 'mesh', 'room', 'legacy'], default='room-local', help='photo-room adds mesh-conditioned photographic references; image-room starts from a whole-room front image; learned retains independent object image generation')
     generate.add_argument('--resume',action='store_true',help='Resume an identical image-room/learned request from completed stages')

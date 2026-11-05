@@ -153,7 +153,7 @@ def create_local_proxy(prompt,output,size=512,views=16,seed=0,front_image=None,r
     return completed
 
 
-def generate_local_scene(prompt,output,size=512,views=16,seed=0,front_image=None,room_size=None,resume=False,planner_model=None):
+def generate_local_scene(prompt,output,size=512,views=16,seed=0,front_image=None,room_size=None,resume=False,planner_model=None,rgb_target=None):
     from .reference_pipeline import run_reference_experiment
     proxy=create_local_proxy(prompt,output,size,views,seed,front_image,room_size,resume,planner_model)
-    return run_reference_experiment(proxy,output,resume=resume)
+    return run_reference_experiment(proxy,output,resume=resume,rgb_target=rgb_target)

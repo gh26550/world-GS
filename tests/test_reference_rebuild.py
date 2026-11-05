@@ -101,3 +101,9 @@ class ReferenceRebuildTest(unittest.TestCase):
   self.assertEqual(len({f['id'] for f in frames}),64)
   for f in frames:self.assertTrue(safe_eye(np.array(f['transform_matrix'])[:3,3],shapes[0],[]))
   extra=frames[len(base):];self.assertGreater(len({f['height_above_floor'] for f in extra}),1);self.assertGreater(len({f['room_radius_scale'] for f in extra}),1)
+
+ def test_prompt_generation_forwards_exact_rgb_target(self):
+  from worldgs.pipeline import generate
+  with patch('worldgs.local_room.generate_local_scene',return_value='started') as backend:
+   self.assertEqual(generate('room','out',rgb_target=200),'started');self.assertEqual(backend.call_args.kwargs['rgb_target'],200)
+  with self.assertRaisesRegex(ValueError,'room-local only'):generate('room','out',mode='mesh',rgb_target=200)
