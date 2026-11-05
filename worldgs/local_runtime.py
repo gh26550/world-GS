@@ -8,6 +8,7 @@ class LocalRuntime:
         self.comfy_python=Path(os.environ.get('WORLDGS_COMFY_PYTHON',str(Path.home()/'miniforge/envs/worldmesh-comfy/bin/python')));self.depth_python=Path(os.environ.get('WORLDGS_DEPTH_PYTHON',str(Path.home()/'miniforge/envs/worldmesh-depth-pro/bin/python')))
         if image_model not in ['controlnet','base','distilled']:raise ValueError('Use controlnet, base or distilled local profile')
         self.image_model=image_model
+        self.model_workers={}
         self.workflow=self.root/('comfyui/scenes_workflows/image_flux2_klein_image_edit_9b_base_iterative.json' if image_model=='base' else 'comfyui/scenes_workflows/image_flux2_klein_image_edit_9b_distilled_iterative_api.json')
     def preflight(self):
         if self.image_model=='controlnet':
@@ -41,22 +42,46 @@ class LocalRuntime:
     def worker(self,python,script,request,record):
         record=Path(record);record.write_text(json.dumps(request,indent=2));env=os.environ.copy();env['PYTHONUNBUFFERED']='1'
         with record.with_suffix('.log').open('w') as log:subprocess.run([str(python),str(Path(__file__).with_name(script)),str(record)],cwd=self.root,env=env,stdout=log,stderr=subprocess.STDOUT,check=True)
+    def persistent_worker(self,python,script,request,record):
+        record=Path(record);record.write_text(json.dumps(request,indent=2));done=record.with_suffix('.done.json')
+        if done.exists():done.unlink()
+        if script not in self.model_workers:
+            self.folder.mkdir(parents=True,exist_ok=True);log=(self.folder/(script+'.server.log')).open('a');env=os.environ.copy();env['PYTHONUNBUFFERED']='1'
+            proc=subprocess.Popen([str(python),str(Path(__file__).with_name('local_model_server.py')),str(Path(__file__).with_name(script))],cwd=self.root,env=env,stdin=subprocess.PIPE,stdout=log,stderr=subprocess.STDOUT,text=True)
+            self.model_workers[script]=(proc,log)
+        proc,_=self.model_workers[script]
+        if proc.poll() is not None:raise RuntimeError('Local model worker stopped: '+script)
+        proc.stdin.write(json.dumps(dict(request=str(record),done=str(done)))+'\n');proc.stdin.flush();started=time.monotonic()
+        while not done.exists():
+            if proc.poll() is not None:raise RuntimeError('Local model worker stopped: '+script)
+            if time.monotonic()-started>1800:raise TimeoutError('Local model request timed out: '+script)
+            time.sleep(.1)
+        result=json.loads(done.read_text())
+        if not result.get('success'):raise RuntimeError(result.get('error','Local model failed'))
     def generate(self,guide,style,prompt,seed,output,size,kind='edit',previous=None,depth_guide=None,visible_labels=None,appearance=None,edge_guide=None):
         request=dict(backend_root=str(self.root),workflow=str(self.workflow),port=self.port,guide=str(guide),style=str(style),prompt=prompt,seed=seed,output=str(output),size=size,visible_labels=visible_labels,appearance=appearance,edge_guide=str(edge_guide) if edge_guide else None,profile=self.image_model,kind=kind,previous=str(previous) if previous else None,depth_guide=str(depth_guide) if depth_guide else None)
         record=Path(output).with_suffix('.request.json')
         if Path(output).is_file() and record.is_file() and json.loads(record.read_text())==request:return
         if self.image_model=='controlnet':
             import sys
-            self.worker(sys.executable,'local_control_worker.py',request,record)
+            self.persistent_worker(sys.executable,'local_control_worker.py',request,record)
         else:self.worker(self.comfy_python,'local_flux_worker.py',request,record)
     def depth(self,image,focal_px,output):
         self.free();request=dict(image=str(image),focal_px=float(focal_px),output=str(output),checkpoint=str(self.root/'ml-depth-pro/checkpoints/depth_pro.pt'))
-        self.worker(self.depth_python,'local_depth_worker.py',request,Path(output).with_suffix('.request.json'))
+        if self.image_model=='controlnet':self.persistent_worker(self.depth_python,'local_depth_worker.py',request,Path(output).with_suffix('.request.json'))
+        else:self.worker(self.depth_python,'local_depth_worker.py',request,Path(output).with_suffix('.request.json'))
     def layout(self,image,objects,output):
         import sys
         request=dict(image=str(image),objects=[dict(label=o['label'],box=np_box(o['box'])) for o in objects],labels=['sofa','chair','table','bookshelf','bed','cabinet','rug','window'],output=str(output))
         self.worker(sys.executable,'local_layout_worker.py',request,Path(output).with_suffix('.request.json'))
     def close(self):
+        for proc,log in self.model_workers.values():
+            if proc.poll() is None:
+                proc.stdin.close()
+                try:proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:proc.kill();proc.wait()
+            log.close()
+        self.model_workers.clear()
         if self.proc is not None and self.proc.poll() is None:
             self.proc.terminate()
             try:self.proc.wait(timeout=20)
