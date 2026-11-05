@@ -58,3 +58,17 @@ class ReferenceRebuildTest(unittest.TestCase):
   d,faces,rgb=self.scene();faces[20:45,32:45]=2
   result=assess_reference(d,d,d,rgb,faces,np.array([0,6,7]),64,components=[dict(group='room') for _ in range(6)]+[dict(group='furniture'),dict(group='furniture')])
   groups=[r for r in result['components'] if r['group']=='furniture'];self.assertEqual(len(groups),1);self.assertEqual(groups[0]['owners'],[6,7]);self.assertTrue(result['passed'])
+
+ def test_worldmesh_cameras_cover_heights_and_defer_overhead(self):
+  from worldgs.reference_cameras import worldmesh_cameras
+  shapes=[dict(min=[-3,-1.5,-4],max=[3,1.5,4])];old=json.dumps(shapes);frames=worldmesh_cameras(shapes,64)
+  self.assertEqual(old,json.dumps(shapes));self.assertEqual([f['camera_kind'] for f in frames[:2]],['bootstrap']*2)
+  self.assertEqual(sum(f['camera_kind']=='overhead' for f in frames),8);self.assertGreaterEqual(len(frames),24)
+  self.assertTrue(all(f['camera_kind']=='overhead' for f in frames[-8:]))
+  a,b=[np.array(f['transform_matrix']) for f in frames[:2]];self.assertLess(a[:3,2]@b[:3,2],-.99)
+  for f in frames[-8:]:self.assertGreater(np.array(f['transform_matrix'])[1,2],0)
+ def test_nearest_reference_uses_only_accepted_camera_poses(self):
+  from worldgs.reference_cameras import closest_accepted
+  identity=dict(id='same',transform_matrix=np.eye(4).tolist());opposite=np.eye(4);opposite[:3,:3]=np.diag([-1,1,-1])
+  other=dict(id='opposite',transform_matrix=opposite.tolist());entries=[dict(frame=other),dict(frame=identity)]
+  self.assertEqual(closest_accepted(identity,entries)['frame']['id'],'same');self.assertIsNone(closest_accepted(identity,[]))

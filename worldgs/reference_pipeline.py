@@ -3,7 +3,7 @@ import hashlib,json,shutil
 from pathlib import Path
 import numpy as np
 from PIL import Image
-from .reference_cameras import benchmark_cameras
+from .reference_cameras import worldmesh_cameras,closest_accepted
 from .reference_geometry import assess_reference
 from .local_runtime import LocalRuntime
 from .local_room import load_proxy
@@ -32,8 +32,8 @@ def validate_reference_dataset(folder,meta):
 
 def prepare_reference_experiment(src,folder,attempts,model,fov):
     from .appearance_reference import appearance_atlas
-    original=json.loads((src/'scene.json').read_text());mesh,layout,owners=load_proxy(src);frames=benchmark_cameras(layout['shapes'],original['size'],fov);runtime=LocalRuntime(folder/'logs',image_model=model);models=runtime.preflight()
-    recipe=dict(version=3,model_profile=model,source=str(src),mesh_sha256=sha(src/'scene_mesh.glb'),source_sha256=sha(src/'source_front.png'),size=original['size'],seed=original['seed'],attempts=attempts,models=models,cameras=frames,validation='reference_geometry_v3_physical_groups')
+    original=json.loads((src/'scene.json').read_text());mesh,layout,owners=load_proxy(src);frames=worldmesh_cameras(layout['shapes'],original['size'],fov);runtime=LocalRuntime(folder/'logs',image_model=model);models=runtime.preflight()
+    recipe=dict(version=4,camera_policy='worldmesh_perimeter16_overhead8',model_profile=model,source=str(src),mesh_sha256=sha(src/'scene_mesh.glb'),source_sha256=sha(src/'source_front.png'),size=original['size'],seed=original['seed'],attempts=attempts,models=models,cameras=frames,validation='reference_geometry_v3_physical_groups')
     return original,mesh,layout,owners,frames,runtime,recipe
 
 def initialize_experiment(src,folder,recipe,resume):
@@ -56,11 +56,14 @@ def collect_candidates(folder,renderer,frames,runtime,recipe):
     from .appearance_reference import appearance_atlas
     from .layout_consistency import layout_contract
     from .room_verification import camera_context
-    plan=json.loads((folder/'planning/image_room_plan.json').read_text());contract=layout_contract(dict(vertices=renderer.mesh.vertices,faces=renderer.mesh.faces,owners=renderer.owners),renderer.components,plan,recipe['mesh_sha256'],recipe['source_sha256']);labels={o['id']:o['label'] for o in contract['objects']};size=recipe['size'];appearance_atlas(Image.open(folder/'source_front.png'),recipe['seed']).save(folder/'appearance.png');results=[]
+    plan=json.loads((folder/'planning/image_room_plan.json').read_text());contract=layout_contract(dict(vertices=renderer.mesh.vertices,faces=renderer.mesh.faces,owners=renderer.owners),renderer.components,plan,recipe['mesh_sha256'],recipe['source_sha256']);labels={o['id']:o['label'] for o in contract['objects']};size=recipe['size'];appearance_atlas(Image.open(folder/'source_front.png'),recipe['seed']).save(folder/'appearance.png');results=[];accepted=[]
     with runtime:
         for index,f in enumerate(frames):
             d=folder/'references'/f['id'];hit=renderer.render(np.array(f['K']),np.array(f['transform_matrix']),size)
             if not (d/'proxy_depth.npy').exists():runtime.depth(d/'proxy.png',f['K'][0][0],d/'proxy_depth.npy')
+            nearest=closest_accepted(f,accepted);style=folder/'appearance.png'
+            if nearest is not None:
+                style=d/'nearest_appearance.png';appearance_atlas(Image.open(folder/nearest['row']['image']),recipe['seed']).save(style)
             context,objects=camera_context(hit,renderer.owners,renderer.components,labels);prompt='One photorealistic image from the EXACT proxy camera. '+context;rows=[]
             for attempt in range(recipe['attempts']):
                 name=f'candidate_{attempt:02d}.png';photo=d/name;pred=d/f'predicted_{attempt:02d}.npy';assessment_file=d/f'assessment_{attempt:02d}.json'
@@ -70,23 +73,25 @@ def collect_candidates(folder,renderer,frames,runtime,recipe):
                     else:raise ValueError('Cached candidate evidence changed')
                 else:
                     write(folder/'status.json',dict(stage='collecting',camera=f['id'],attempt=attempt+1,completed=len(results),total=len(frames)))
-                    runtime.generate(d/'proxy.png',folder/'appearance.png',prompt,recipe['seed']+index*101+attempt,photo,size,kind='structure',depth_guide=d/'depth.png',edge_guide=d/'boundaries.png',visible_labels=[o['label'] for o in objects],appearance=plan.get('style',''))
+                    runtime.generate(d/'proxy.png',style,prompt,recipe['seed']+index*101+attempt,photo,size,kind='structure',depth_guide=d/'depth.png',edge_guide=d/'boundaries.png',visible_labels=[o['label'] for o in objects],appearance=plan.get('style',''))
                     image=Image.open(photo).convert('RGB')
                     if abs(image.width/image.height-1)>.002:raise ValueError('Generated camera aspect changed; cropping is forbidden')
                     image.resize((size,size),Image.Resampling.BOX).save(photo)
                     runtime.depth(photo,f['K'][0][0],pred)
                     result=assess_reference(hit['depth'],np.load(d/'proxy_depth.npy'),np.load(pred),np.asarray(Image.open(photo)),hit['faces'],renderer.owners,size,components=renderer.components)
-                    evidence=[d/'proxy.png',d/'depth.png',d/'boundaries.png',d/'mesh_depth.npy',d/'proxy_depth.npy',photo,pred,folder/'appearance.png']
-                    row=dict(camera=f['id'],image=str(photo.relative_to(folder)),assessment=result,evidence={str(p.relative_to(folder)):sha(p) for p in evidence});write(assessment_file,row);rows.append(row)
+                    evidence=[d/'proxy.png',d/'depth.png',d/'boundaries.png',d/'mesh_depth.npy',d/'proxy_depth.npy',photo,pred,style]
+                    row=dict(camera=f['id'],reference_camera=nearest['frame']['id'] if nearest else None,image=str(photo.relative_to(folder)),assessment=result,evidence={str(p.relative_to(folder)):sha(p) for p in evidence});write(assessment_file,row);rows.append(row)
                 if rows[-1]['assessment']['passed']:break
-            good=[r for r in rows if r['assessment']['passed']];selected=max(good or rows,key=lambda r:r['assessment']['score']);results.append(selected);write(folder/'assessment.json',dict(complete=len(results)==len(frames),ready=len(results)==len(frames) and all(r['assessment']['passed'] for r in results),views=results));print(f"Camera {f['id']}: geometry_passed={selected['assessment']['passed']}",flush=True)
+            good=[r for r in rows if r['assessment']['passed']];selected=max(good or rows,key=lambda r:r['assessment']['score']);results.append(selected)
+            if selected['assessment']['passed']:accepted.append(dict(frame=f,row=selected))
+            write(folder/'assessment.json',dict(complete=len(results)==len(frames),ready=len(results)==len(frames) and all(r['assessment']['passed'] for r in results),views=results));print(f"Camera {f['id']}: geometry_passed={selected['assessment']['passed']}",flush=True)
     return results
 
 def write_review(folder,frames,results):
     cards=[]
     for f,row in zip(frames,results):
         label='幾何検査合格' if row['assessment']['passed'] else '要確認';cards.append(f'<h2>{f["id"]}: {label}</h2><div><img src="references/{f["id"]}/proxy.png"><img src="{row["image"]}"></div>')
-    (folder/'review.html').write_text('<!doctype html><meta charset="utf-8"><title>4視点の参照生成</title><style>body{font:16px sans-serif;margin:24px}div{display:flex;gap:12px}img{width:45%;max-width:512px}</style><h1>4視点の参照生成と幾何検査</h1><p>左：共通メッシュ、右：同じカメラで生成した画像。物体検出器の分類名は合否に使わない。幾何検査だけでは意味的な正しさを保証しない。</p>'+''.join(cards),encoding='utf-8')
+    (folder/'review.html').write_text('<!doctype html><meta charset="utf-8"><title>全周カメラの参照生成</title><style>body{font:16px sans-serif;margin:24px}div{display:flex;gap:12px}img{width:45%;max-width:512px}</style><h1>全周カメラの参照生成と幾何検査</h1><p>左：共通メッシュ、右：同じカメラで生成した画像。物体検出器の分類名は合否に使わない。幾何検査だけでは意味的な正しさを保証しない。</p>'+''.join(cards),encoding='utf-8')
 
 def package_dataset(src,folder,original,mesh,layout,owners,frames,results):
     from .learned_references import save_references
@@ -97,20 +102,20 @@ def package_dataset(src,folder,original,mesh,layout,owners,frames,results):
     job=json.loads((src/'render_job.json').read_text());job.update(folder=str(folder),frames=list(training))
     for i,f in enumerate(frames):
         probe=dict(f,file_path=f'probe_{i:02d}.png',split='heldout',photographic_ground_truth=False);shutil.copy2(folder/'references'/f['id']/'proxy.png',folder/probe['file_path']);job['frames'].append(probe)
-    write(folder/'render_job.json',job);meta=save_references(folder,original['prompt'],original['seed'],original['size'],mesh,layout['components'],owners,job);meta.update(mode='image_room_mesh_v12',front_alignment='front_alignment.json',reference_v2_audit='reference_audit.json',training_geometry_policy='shared_layout_local_detail_v17',reference_source='Four-camera local mesh/depth/boundary conditioned photographs',rgb_evaluation_is_independent=False)
+    write(folder/'render_job.json',job);meta=save_references(folder,original['prompt'],original['seed'],original['size'],mesh,layout['components'],owners,job);meta.update(mode='image_room_mesh_v12',front_alignment='front_alignment.json',reference_v2_audit='reference_audit.json',training_geometry_policy='shared_layout_local_detail_v17',reference_source='WorldMesh-inspired multi-camera local mesh/depth/boundary conditioned photographs',rgb_evaluation_is_independent=False)
     audit=dict(complete=True,passed=True,mesh_sha256=sha(folder/'scene_mesh.glb'),source_sha256=sha(folder/'source_front.png'),projection_sha256=projection_fingerprint(meta),views=[dict(file_path=f['file_path'],sha256=sha(folder/f['file_path'])) for f in training],selected=results)
     write(folder/'reference_audit.json',audit);write(folder/'scene.json',meta);audit_front(folder);validate_reference_dataset(folder,meta);return meta
 
-def run_reference_experiment(path,output,resume=False,prepare_only=False,attempts=2,model='controlnet',fov=70,train_steps=0,max_points=100000):
+def run_reference_experiment(path,output,resume=False,prepare_only=False,attempts=2,model='controlnet',fov=60,train_steps=0,max_points=100000):
     src=Path(path).resolve();folder=Path(output).resolve()
     if src==folder or src in folder.parents or folder in src.parents:raise ValueError('Use a separate sibling output')
     if not 1<=attempts<=3:raise ValueError('Use 1..3 attempts per camera')
     original,mesh,layout,owners,frames,runtime,recipe=prepare_reference_experiment(src,folder,attempts,model,fov);initialize_experiment(src,folder,recipe,resume);renderer=MeshRenderer(mesh,layout['components'],owners);render_benchmark(folder,renderer,frames,original['size'])
-    if prepare_only:write(folder/'status.json',dict(stage='prepared',cameras=4));return recipe
+    if prepare_only:write(folder/'status.json',dict(stage='prepared',cameras=len(frames)));return recipe
     try:
         results=collect_candidates(folder,renderer,frames,runtime,recipe);write_review(folder,frames,results)
-        if not all(r['assessment']['passed'] for r in results):write(folder/'status.json',dict(stage='review_required',trainable=False,passed=sum(r['assessment']['passed'] for r in results),total=4));return results
-        meta=package_dataset(src,folder,original,mesh,layout,owners,frames,results);write(folder/'status.json',dict(stage='references_ready',trainable=True,cameras=4))
+        if not all(r['assessment']['passed'] for r in results):write(folder/'status.json',dict(stage='review_required',trainable=False,passed=sum(r['assessment']['passed'] for r in results),total=len(frames)));return results
+        meta=package_dataset(src,folder,original,mesh,layout,owners,frames,results);write(folder/'status.json',dict(stage='references_ready',trainable=True,cameras=len(frames)))
         if train_steps:
             from .train import train
             return train(folder,train_steps,max_points)
@@ -135,8 +140,8 @@ def evaluate_reference_experiment(path,output,train_steps=0,max_points=100000):
             index=assessment_file.stem.split('_')[-1];image=folder/old_row['image'];prediction=d/('predicted_'+index+'.npy');check=assess_reference(hit['depth'],np.load(d/'proxy_depth.npy'),np.load(prediction),np.asarray(Image.open(image)),hit['faces'],owners,recipe['size'],components=layout['components']);row=dict(old_row,assessment=check,previous_assessment=old_row['assessment'],evaluation_version=3);write(assessment_file.with_suffix('.previous.json'),old_row);write(assessment_file,row);rows.append(row)
         good=[r for r in rows if r['assessment']['passed']];results.append(max(good or rows,key=lambda r:r['assessment']['score']))
     ready=all(r['assessment']['passed'] for r in results);write(folder/'assessment.json',dict(complete=True,ready=ready,views=results));write_review(folder,frames,results)
-    if not ready:write(folder/'status.json',dict(stage='review_required',passed=sum(r['assessment']['passed'] for r in results),total=4,trainable=False));return results
-    meta=package_dataset(src,folder,original,mesh,layout,owners,frames,results);write(folder/'status.json',dict(stage='references_ready',trainable=True,cameras=4))
+    if not ready:write(folder/'status.json',dict(stage='review_required',passed=sum(r['assessment']['passed'] for r in results),total=len(frames),trainable=False));return results
+    meta=package_dataset(src,folder,original,mesh,layout,owners,frames,results);write(folder/'status.json',dict(stage='references_ready',trainable=True,cameras=len(frames)))
     if train_steps:
         from .train import train
         return train(folder,train_steps,max_points)
