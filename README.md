@@ -1,3 +1,5 @@
+> 現在の通常生成は **追加233カメラ＋初期1視点、RGB教師の目標200枚**です。[生成フローと添付図との相違](docs/current-flow-233-20261106.md)。以下のv33以前の記録は過去方式の説明を含みます。
+
 > [WorldMeshを参考にした全周カメラ再構成と新規初期画像](docs/worldmesh-cameras-20261105.md)を追加しました。
 
 > 既定のroom-localを、参照画像の生成・収集・形状評価・学習用出力を分離した全周カメラ構成へ作り直しました。[新構成・実測結果・制約](docs/reference-rebuild-20261105.md)。全カメラ候補を保存し、形状検査が未達ならGS学習へ進みません。現状は全周完成ではありません。
@@ -15,7 +17,7 @@
 1. 部屋全体の正面画像を生成し、画像を読んで全体の配置・支持関係を推定します。
 2. 側面・背面の部屋画像を仮形状で誘導して補完します。
 3. 室内画像から物体を切り出してSAM3Dメッシュを復元し、部屋全体の共通メッシュを組み立てます。
-4. 共通メッシュから対向2視点・壁沿い最大16視点・高所8視点のカメラ画像と深度・境界を作り、ローカルAIで写真参照を生成します。全参照画像の形状検査が通った場合にGS学習用データを出力します。
+4. 共通メッシュから追加233カメラの概形RGB・深度・境界を作り、写真を生成・検証します。初期画像を含む200枚をRGB教師に選び、残りは形状のみ参照します。不足時は未達として停止します。
 
 [新方式の処理・出力・制約](docs/image-room-v12.md)を参照してください。背面は推測です。最初の画像は `source_front.png`、補完画像は `room_images/`、基準メッシュは `scene_mesh.glb`、GS教師は `view_*.png`、学習後GSは `scene_unity.ply` です。
 
@@ -27,12 +29,12 @@
 ```bash
 cd '/home/dpc7/world GS'
 ./run.sh generate --prompt 'A cozy living room with a sofa, bookshelves and a wooden table, wide angle interior photograph' --output runs/livingroom_image_new --size 512 --views 12 --seed 42
-./run.sh train runs/livingroom_image_new --steps 2000 --max-points 100000
+./run.sh reference-export runs/livingroom_image_new --output runs/livingroom_image_new_production --train-steps 24000 --max-points 180000
 ```
 
 通常の入力はプロンプトのみです。`--room-size WIDTH HEIGHT LENGTH`を指定した場合は部屋寸法を優先します。未指定の寸法や配置は推定であり、実測値ではありません。
 
-現在のroom-localはWorldMeshを参考に対向2・壁沿い最大16・高所8の写真参照を生成します。近い初期方向との重複を除くため枚数は変わります。旧経路では`--views`は水平の分割数です。上・下向き、家具周囲、部屋の隅、床・天井を直接見る移動カメラも追加するため、参照画像の総数は指定値より多くなります。`--max-points`は初期ガウス数の上限で、学習中の上限は写真参照ありで300,000、旧メッシュ参照で180,000です。
+現在のroom-localはWorldMesh型の対向・壁沿い・高所に多高さ・多距離の視点を追加し、既定233カメラを全て評価します。--camera-countと--rgb-targetで明示変更できます。旧経路では`--views`は水平の分割数です。上・下向き、家具周囲、部屋の隅、床・天井を直接見る移動カメラも追加するため、参照画像の総数は指定値より多くなります。`--max-points`は初期ガウス数の上限で、学習中の上限は写真参照ありで300,000、旧メッシュ参照で180,000です。
 
 生成済みの段階から再開する場合は、**同じプロンプト・サイズ・視点数・seed・部屋寸法指定**に`--resume`を追加します。既存の別要求のフォルダは上書きしません。
 

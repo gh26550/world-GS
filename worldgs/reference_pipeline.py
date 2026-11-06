@@ -35,14 +35,17 @@ def validate_reference_dataset(folder,meta):
         for name,digest in row['evidence'].items():
             if sha(folder/name)!=digest:raise ValueError('Reference evidence changed: '+name)
 
-def prepare_reference_experiment(src,folder,attempts,model,fov,rgb_target=None):
+def prepare_reference_experiment(src,folder,attempts,model,fov,rgb_target=None,camera_count=None):
     from .appearance_reference import appearance_atlas
     original=json.loads((src/'scene.json').read_text());mesh,layout,owners=load_proxy(src);frames=worldmesh_cameras(layout['shapes'],original['size'],fov);runtime=LocalRuntime(folder/'logs',image_model=model);models=runtime.preflight()
     if rgb_target is not None:
         if rgb_target<26:raise ValueError('RGB target includes source image and must be at least 26')
-        frames=dense_camera_plan(layout['shapes'],original['size'],int(np.ceil((rgb_target-1)*1.6)),fov)
+    if camera_count is not None and rgb_target is not None and camera_count<rgb_target-1:raise ValueError('Camera count cannot supply the requested RGB teacher target')
+    if rgb_target is not None or camera_count is not None:
+        frames=dense_camera_plan(layout['shapes'],original['size'],camera_count if camera_count is not None else int(np.ceil((rgb_target-1)*1.6)),fov)
     recipe=dict(version=4,camera_policy='worldmesh_perimeter16_overhead8',model_profile=model,source=str(src),mesh_sha256=sha(src/'scene_mesh.glb'),source_sha256=sha(src/'source_front.png'),size=original['size'],seed=original['seed'],attempts=attempts,models=models,cameras=frames,validation='reference_geometry_v3_physical_groups')
     if rgb_target is not None:recipe.update(version=5,camera_policy='worldmesh_plus_safe_multiheight_multidistance',rgb_target=rgb_target,target_includes_source=True)
+    if camera_count is not None:recipe.update(version=6,camera_policy='worldmesh_plus_safe_multiheight_multidistance',camera_count=camera_count,collect_all_planned=True)
     return original,mesh,layout,owners,frames,runtime,recipe
 
 def initialize_experiment(src,folder,recipe,resume):
@@ -92,22 +95,27 @@ def collect_candidates(folder,renderer,frames,runtime,recipe):
                     row=dict(camera=f['id'],reference_camera=nearest['frame']['id'] if nearest else None,image=str(photo.relative_to(folder)),assessment=result,evidence={str(p.relative_to(folder)):sha(p) for p in evidence});write(assessment_file,row);rows.append(row)
                 if rows[-1]['assessment']['passed']:break
             good=[r for r in rows if r['assessment']['passed']];selected=max(good or rows,key=lambda r:r['assessment']['score']);results.append(selected)
+            if recipe.get('collect_all_planned'):
+                selected['rgb_teacher']=selected['assessment']['passed'] and (recipe.get('rgb_target') is None or sum(uses_rgb(r) for r in results[:-1])+1<recipe['rgb_target'])
             if selected['assessment']['passed']:accepted.append(dict(frame=f,row=selected))
-            reached=recipe.get('rgb_target') is not None and len(accepted)+1>=recipe['rgb_target']
-            complete=reached or len(results)==len(frames)
-            write(folder/'assessment.json',dict(complete=complete,ready=reached if recipe.get('rgb_target') else complete and all(r['assessment']['passed'] for r in results),rgb_teacher_count=len(accepted)+1,rgb_target=recipe.get('rgb_target'),planned_cameras=len(frames),attempted_cameras=len(results),views=results));print(f"Camera {f['id']}: geometry_passed={selected['assessment']['passed']} RGB teachers={len(accepted)+1}",flush=True)
-            if reached:break
+            rgb_count=sum(uses_rgb(r) for r in results)+1;reached=recipe.get('rgb_target') is not None and rgb_count>=recipe['rgb_target']
+            complete=(reached and not recipe.get('collect_all_planned')) or len(results)==len(frames)
+            write(folder/'assessment.json',dict(complete=complete,ready=complete and reached if recipe.get('rgb_target') else complete and all(r['assessment']['passed'] for r in results),rgb_teacher_count=rgb_count,rgb_target=recipe.get('rgb_target'),planned_cameras=len(frames),attempted_cameras=len(results),views=results));print(f"Camera {f['id']}: geometry_passed={selected['assessment']['passed']} RGB teachers={rgb_count}",flush=True)
+            if reached and not recipe.get('collect_all_planned'):break
     return results
 
 def write_review(folder,frames,results):
     from .reference_review import write_review as explain_review
     explain_review(folder,frames,results)
 
+def uses_rgb(row):return row['assessment']['passed'] and row.get('rgb_teacher',True)
+
+
 def training_view_source(folder,frame,row,allow_geometry_only=False):
     frame=dict(frame)
-    if row['assessment']['passed']:return frame,folder/row['image']
+    if uses_rgb(row):return frame,folder/row['image']
     if not allow_geometry_only:raise ValueError('Rejected photograph cannot be an RGB teacher')
-    frame.update(rgb_weight=0.,reference_source='Exact mesh depth/opacity only; rejected photograph excluded')
+    frame.update(rgb_weight=0.,reference_source='Exact mesh depth/opacity only; photograph not selected for RGB supervision')
     return frame,folder/'references'/frame['id']/'proxy.png'
 
 
@@ -122,7 +130,7 @@ def package_dataset(src,folder,original,mesh,layout,owners,frames,results,allow_
     for i,f in enumerate(frames):
         probe=dict(f,file_path=f'probe_{i:02d}.png',split='heldout',photographic_ground_truth=False);shutil.copy2(folder/'references'/f['id']/'proxy.png',folder/probe['file_path']);job['frames'].append(probe)
     write(folder/'render_job.json',job);meta=save_references(folder,original['prompt'],original['seed'],original['size'],mesh,layout['components'],owners,job);meta.update(mode='image_room_mesh_v12',front_alignment='front_alignment.json',reference_v2_audit='reference_audit.json',training_geometry_policy='shared_layout_local_detail_v17',reference_source='WorldMesh-inspired multi-camera local mesh/depth/boundary conditioned photographs',rgb_evaluation_is_independent=False)
-    audit=dict(complete=True,passed=True,mesh_sha256=sha(folder/'scene_mesh.glb'),source_sha256=sha(folder/'source_front.png'),projection_sha256=projection_fingerprint(meta),views=[dict(file_path=f['file_path'],sha256=sha(folder/f['file_path'])) for f in training],selected=[r for r in results if r['assessment']['passed']],geometry_only=[dict(camera=f['id'],file_path=f['file_path'],assessment=r['assessment'],evidence=r['evidence']) for f,r in zip(frames,results) if not r['assessment']['passed']],policy='accepted_photos_with_mesh_only_rejected_views' if allow_geometry_only else 'all_photographs_passed',rgb_weights={f['file_path']:f.get('rgb_weight',1.) for f in training},all_photographs_passed=all(r['assessment']['passed'] for r in results))
+    audit=dict(complete=True,passed=True,mesh_sha256=sha(folder/'scene_mesh.glb'),source_sha256=sha(folder/'source_front.png'),projection_sha256=projection_fingerprint(meta),views=[dict(file_path=f['file_path'],sha256=sha(folder/f['file_path'])) for f in training],selected=[r for r in results if uses_rgb(r)],geometry_only=[dict(camera=f['id'],file_path=f['file_path'],assessment=r['assessment'],evidence=r['evidence']) for f,r in zip(frames,results) if not uses_rgb(r)],policy='selected_photos_with_mesh_only_other_views' if allow_geometry_only else 'all_photographs_passed',rgb_weights={f['file_path']:f.get('rgb_weight',1.) for f in training},all_photographs_passed=all(r['assessment']['passed'] for r in results))
     meta['all_photographs_passed']=audit['all_photographs_passed']
     write(folder/'reference_audit.json',audit);write(folder/'scene.json',meta);audit_front(folder);validate_reference_dataset(folder,meta);return meta
 
@@ -139,18 +147,18 @@ def reuse_reference_evidence(old,folder,recipe):
     write(folder/'reused_evidence.json',dict(source=str(old),policy='Exact same source, mesh, cameras and local model; cached evidence hashes verified during collection'))
 
 
-def run_reference_experiment(path,output,resume=False,prepare_only=False,attempts=2,model='controlnet',fov=60,train_steps=0,max_points=100000,rgb_target=None,reuse_references=None):
+def run_reference_experiment(path,output,resume=False,prepare_only=False,attempts=2,model='controlnet',fov=60,train_steps=0,max_points=100000,rgb_target=None,reuse_references=None,camera_count=None):
     src=Path(path).resolve();folder=Path(output).resolve()
     if src==folder or src in folder.parents or folder in src.parents:raise ValueError('Use a separate sibling output')
     if not 1<=attempts<=3:raise ValueError('Use 1..3 attempts per camera')
-    original,mesh,layout,owners,frames,runtime,recipe=prepare_reference_experiment(src,folder,attempts,model,fov,rgb_target);initialize_experiment(src,folder,recipe,resume)
+    original,mesh,layout,owners,frames,runtime,recipe=prepare_reference_experiment(src,folder,attempts,model,fov,rgb_target,camera_count);initialize_experiment(src,folder,recipe,resume)
     if reuse_references:reuse_reference_evidence(reuse_references,folder,recipe)
     renderer=MeshRenderer(mesh,layout['components'],owners);render_benchmark(folder,renderer,frames,original['size'])
     if prepare_only:write(folder/'status.json',dict(stage='prepared',cameras=len(frames)));return recipe
     try:
         results=collect_candidates(folder,renderer,frames,runtime,recipe);used_frames=frames[:len(results)];write_review(folder,used_frames,results)
         if rgb_target is not None:
-            write(folder/'status.json',dict(stage='rgb_target_ready' if sum(r['assessment']['passed'] for r in results)+1>=rgb_target else 'rgb_target_unmet',rgb_teachers=sum(r['assessment']['passed'] for r in results)+1,rgb_target=rgb_target,attempted_cameras=len(results),planned_cameras=len(frames)))
+            write(folder/'status.json',dict(stage='rgb_target_ready' if sum(uses_rgb(r) for r in results)+1>=rgb_target else 'rgb_target_unmet',rgb_teachers=sum(uses_rgb(r) for r in results)+1,rgb_target=rgb_target,attempted_cameras=len(results),planned_cameras=len(frames)))
             return results
         if not all(r['assessment']['passed'] for r in results):write(folder/'status.json',dict(stage='review_required',trainable=False,passed=sum(r['assessment']['passed'] for r in results),total=len(frames)));return results
         meta=package_dataset(src,folder,original,mesh,layout,owners,frames,results);write(folder/'status.json',dict(stage='references_ready',trainable=True,cameras=len(frames)))
@@ -192,7 +200,7 @@ def export_accepted_references(path,output,train_steps=3000,max_points=180000):
     if old==folder or old in folder.parents or folder in old.parents:raise ValueError('Use separate sibling output')
     if folder.exists() and any(folder.iterdir()):raise FileExistsError('Use empty production output')
     if not assessment['complete']:raise ValueError('Collect every planned view before production export')
-    results=assessment['views'];passed=sum(r['assessment']['passed'] for r in results)
+    results=assessment['views'];passed=sum(uses_rgb(r) for r in results)
     if recipe.get('rgb_target') and passed+1!=recipe['rgb_target']:raise ValueError('Requested RGB teacher target has not been reached exactly')
     if passed<8:raise ValueError('Production export needs at least eight accepted translated photographs')
     src=Path(recipe['source']);original=json.loads((src/'scene.json').read_text());mesh,layout,owners=load_proxy(src)
@@ -203,7 +211,7 @@ def export_accepted_references(path,output,train_steps=3000,max_points=180000):
     from .reference_coverage import scaled_intrinsics
     observations={i:[] for i,c in enumerate(layout['components']) if c.get('material')=='generated_asset'}
     for f,row in zip(frames,results):
-        if not row['assessment']['passed']:continue
+        if not uses_rgb(row):continue
         hit=renderer.render(scaled_intrinsics(f['K'],recipe['size'],96),np.asarray(f['transform_matrix']),96);valid=hit['faces']>=0;visible_owners=owners[hit['faces'][valid]]
         for owner in observations:
             if np.count_nonzero(visible_owners==owner)>=4:observations[owner].append(f)

@@ -52,6 +52,13 @@ class ReferenceRebuildTest(unittest.TestCase):
     limited=collect_candidates(folder,Renderer(),frames,runtime,dict(seed=1,size=64,attempts=1,mesh_sha256='mesh',source_sha256='source',rgb_target=3))
    self.assertEqual(len(limited),3);self.assertEqual(runtime.count,4)
    audit=json.loads((folder/'assessment.json').read_text());self.assertTrue(audit['complete']);self.assertTrue(audit['ready']);self.assertEqual(audit['rgb_teacher_count'],3)
+   with patch('worldgs.layout_consistency.layout_contract',return_value={'objects':[]}),patch('worldgs.room_verification.camera_context',return_value=('empty room',[])):
+    fixed=collect_candidates(folder,Renderer(),frames,runtime,dict(seed=1,size=64,attempts=1,mesh_sha256='mesh',source_sha256='source',rgb_target=3,collect_all_planned=True,camera_count=4))
+   from worldgs.reference_pipeline import uses_rgb,training_view_source
+   self.assertEqual(len(fixed),4);self.assertEqual(sum(uses_rgb(row) for row in fixed)+1,3)
+   self.assertTrue(fixed[-1]['assessment']['passed']);self.assertFalse(fixed[-1]['rgb_teacher'])
+   target,_=training_view_source(folder,frames[-1],fixed[-1],True);self.assertEqual(target['rgb_weight'],0.)
+
 
  def test_unresolved_experiment_never_exports_training_dataset(self):
   with tempfile.TemporaryDirectory() as tmp:
@@ -107,3 +114,9 @@ class ReferenceRebuildTest(unittest.TestCase):
   with patch('worldgs.local_room.generate_local_scene',return_value='started') as backend:
    self.assertEqual(generate('room','out',rgb_target=200),'started');self.assertEqual(backend.call_args.kwargs['rgb_target'],200)
   with self.assertRaisesRegex(ValueError,'room-local only'):generate('room','out',mode='mesh',rgb_target=200)
+
+ def test_default_prompt_room_uses_233_cameras_and_200_rgb_target(self):
+  from worldgs.local_room import generate_local_scene
+  with patch('worldgs.local_room.create_local_proxy',return_value='proxy'),patch('worldgs.reference_pipeline.run_reference_experiment',return_value='refs') as run:
+   self.assertEqual(generate_local_scene('room','out'),'refs')
+   self.assertEqual(run.call_args.kwargs['camera_count'],233);self.assertEqual(run.call_args.kwargs['rgb_target'],200)

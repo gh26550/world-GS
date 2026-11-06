@@ -10,6 +10,7 @@ from .room_cameras import room_camera_plan,augment_coverage,rotational_order
 from .room_verification import verify_depth,verify_layout,camera_context,instance_boundaries
 from .appearance_geometry import depth_condition,transfer_appearance
 from .local_runtime import LocalRuntime
+from .reference_config import DEFAULT_CAMERA_COUNT,DEFAULT_RGB_TARGET
 
 def sha(p):return hashlib.sha256(Path(p).read_bytes()).hexdigest()
 def write(path,value):Path(path).write_text(json.dumps(value,indent=2))
@@ -153,7 +154,7 @@ def create_local_proxy(prompt,output,size=512,views=16,seed=0,front_image=None,r
     return completed
 
 
-def generate_local_scene(prompt,output,size=512,views=16,seed=0,front_image=None,room_size=None,resume=False,planner_model=None,rgb_target=None):
+def generate_local_scene(prompt,output,size=512,views=16,seed=0,front_image=None,room_size=None,resume=False,planner_model=None,rgb_target=DEFAULT_RGB_TARGET,camera_count=DEFAULT_CAMERA_COUNT):
     from .reference_pipeline import run_reference_experiment
     proxy=create_local_proxy(prompt,output,size,views,seed,front_image,room_size,resume,planner_model)
-    return run_reference_experiment(proxy,output,resume=resume,rgb_target=rgb_target)
+    return run_reference_experiment(proxy,output,resume=resume,rgb_target=rgb_target,camera_count=camera_count)
