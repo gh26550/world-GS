@@ -4,6 +4,10 @@ import argparse
 def main():
     parser = argparse.ArgumentParser(description='World-GS experimental scene pipeline')
     sub = parser.add_subparsers(dest='command', required=True)
+    inspect=sub.add_parser('inspect-front',help='Read-only comparison of initial image and integrated mesh from the saved source camera')
+    inspect.add_argument('path')
+    inspect.add_argument('--output',required=True)
+    inspect.add_argument('--orientation-probes',action='store_true',help='Render diagnostic 180-degree bookcase rotations without changing the mesh')
     plan = sub.add_parser('plan',help='Create and validate an LLM scene graph without generating images or meshes')
     plan.add_argument('--prompt',required=True)
     plan.add_argument('--output',required=True)
@@ -115,6 +119,9 @@ def main():
         if model:
             args['model_id']=model
         plan_with_llm(output=folder,**args)
+    elif command == 'inspect-front':
+        from .front_inspection import inspect_front
+        inspect_front(**args)
     elif command == 'generate':
         from .pipeline import generate
         generate(**args)
