@@ -31,9 +31,11 @@ class ImageRoomTest(unittest.TestCase):
             eye=pose[:3,3]
             self.assertFalse(((eye>lo-.1)&(eye<hi+.1)).all())
 
-    def test_default_routes_to_image_first_without_object_generation(self):
-        with patch('worldgs.learned_scene.generate_learned_scene',return_value='ok') as backend:
-            self.assertEqual(generate('room','out'),'ok')
+    def test_legacy_photo_room_routes_to_image_first_without_object_generation(self):
+        with patch('worldgs.learned_scene.generate_learned_scene',return_value='mesh') as backend,patch('worldgs.appearance.synthesize_appearance',return_value='ok') as appearance:
+            self.assertEqual(generate('room','out',mode='photo-room'),'ok')
+            self.assertEqual(backend.call_args.args[1],Path('out_scaffold'))
+            appearance.assert_called_once_with(Path('out_scaffold'),'out',size=512,resume=False)
             self.assertTrue(backend.call_args.kwargs['image_room'])
 
     def test_new_mode_uses_validated_mesh_trainer(self):
@@ -91,6 +93,11 @@ class ImageRoomTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError,'No isolated image fallback'):
                     prepare_image_room('room',folder,64,42,front_image=front)
 
+
+    def test_default_routes_to_local_camera_system(self):
+        with patch('worldgs.local_room.generate_local_scene',return_value='local') as backend:
+            self.assertEqual(generate('room','out'),'local')
+            self.assertEqual(backend.call_args.args[:2],('room','out'))
 
 if __name__=='__main__':
     unittest.main()

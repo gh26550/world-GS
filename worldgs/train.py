@@ -23,7 +23,10 @@ def train(path, steps=1000, max_points=100000):
                 status.write_text(json.dumps(dict(stage='training_failed',success=False,error=str(error))))
             raise
         if learned:
-            status.write_text(json.dumps(dict(stage='trained',success=True,steps=steps)))
+            quality_file=Path(path)/'gs_coverage_quality.json'
+            quality=json.loads(quality_file.read_text()) if quality_file.exists() else {'passed':True}
+            status.write_text(json.dumps(dict(stage='trained' if quality['passed'] else 'training_quality_failed',
+                                               success=quality['passed'],steps=steps,coverage=quality)))
         return result
     if json.loads(meta_file.read_text()).get('mode') == 'mesh_teacher_v8':
         from .train_teacher import train_teacher

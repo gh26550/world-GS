@@ -1,0 +1,29 @@
+> 2026-11-06更新：通常のgenerateは追加233カメラ・RGB目標200枚が既定です。[現在の設定](current-flow-233-20261106.md)。以下は200枚実験の候補補充方式の記録も含みます。
+
+# RGB教師の目標枚数（200枚）
+
+reference-runに--rgb-targetを追加した。初期写真1枚を含む、採用RGB教師の正確な枚数を指定する。--rgb-target 200なら新しいカメラ写真199枚が合格するまで収集する。拒否画像やRGB無効のメッシュ描画は200枚に含まない。目標に到達したら残りの予備カメラを生成せず停止する。
+
+WorldMesh型の既存カメラを先頭に保持し、高さ1.15/1.6/2.15m、部屋内の半径尺度0.95/0.72/0.48、注視高さ0.95/1.55mの候補から、位置・向きの多様性を取って追加する。追加カメラは家具境界箱から最低0.65m離し、衝突した位置を近傍へ押し出すことはしない。既存25視点は再現性のため変更しないので、以前診断した見切れ等の問題はその25視点には残る。新規画像も見切れゼロや多視点整合を保証しない。
+
+目標の1.6倍の候補を用意する。200枚目標では319カメラ。使い切っても合格RGBが不足する場合はrgb_target_unmetになり、200枚を達成したとは扱わない。既存の深度検査基準は変更しない。薄物や窓の判定問題は別の修正課題として残る。
+
+```bash
+./run.sh reference-run runs/worldmesh_rebuild_fresh_20261105_proxy --output runs/rgb200_new --rgb-target 200 --attempts 2 --reuse-references runs/worldmesh_rebuild_fresh_20261105
+./run.sh reference-export runs/rgb200_new --output runs/rgb200_new_production --train-steps 24000 --max-points 180000
+```
+
+再利用する場合は初期画像・メッシュ・seed・サイズ・モデルとカメラが一致する必要がある。収集時にキャッシュの根拠ファイルのハッシュも再確認する。初期画像・メッシュを変更した場合は再利用しない。新しい部屋はgenerate --mode room-localで概形まで作成し、その_proxyフォルダにreference-runを使う。
+
+カメラ計画とモデル条件はexperiment.json。進捗とRGB採用数はassessment.json。学習時には初期写真1＋採用生成写真199に加え、拒否カメラの形状専用フレームが入る場合がある。このため総フレーム数は200を超え得るがRGB教師は200枚である。
+
+この設定は--rgb-targetで明示的に指定する。通常のgenerateの既定25視点を無断で200へ変更しない。枚数増加だけで元画像の忠実度や形状精度が上がるとは限らず、教師間の不一致が増える可能性もある。
+
+ControlNetとDepthProは専用のローカルプロセスでモデルを再利用する。要求ごとにGPUからCPUへ戻してGPUメモリを解放し、次の処理へ渡す。毎回のモデル読込を省くが、seed・画像生成条件・深度条件・採否基準は変更しない。このPCでは同一の画像生成要求2回と深度要求を旧処理と比較し、出力が完全一致した。ログはlogs/*.server.log。
+
+プロンプトから新しく始める場合も、RGB枚数を直接指定できる。
+```bash
+./run.sh generate --mode room-local --prompt 'A cozy living room with a sofa, two bookshelves and a wooden table' --output runs/my_rgb200 --seed 106 --rgb-target 200
+./run.sh reference-export runs/my_rgb200 --output runs/my_rgb200_production --train-steps 24000 --max-points 180000
+```
+--views 200は採用RGB枚数の指定ではないため、--rgb-target 200を使用する。

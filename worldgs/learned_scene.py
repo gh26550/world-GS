@@ -178,7 +178,7 @@ def generate_images(plan,folder,seed,retry_ids=None):
             torch.cuda.empty_cache()
 
 
-def assemble(plan,folder):
+def assemble(plan,folder,*,front_fit=False):
     from .mesh_scene import build_components
     w,h,l=plan['room']['size']
     room=dict(name='room',kind='room',min=[-w/2,-h/2,-l/2],max=[w/2,h/2,l/2])
@@ -220,6 +220,24 @@ def assemble(plan,folder):
         normalized.append(mesh)
     plan=repair_layout(plan)
     validate_plan(plan)
+    if front_fit:
+        from .front_alignment import fit_front
+        fit_front(plan,normalized,folder)
+        # Concave sofas and tables can have overlapping AABBs without their
+        # actual surfaces intersecting. Do not move the fitted scene using
+        # those boxes again; record candidate overlaps for mesh-level review.
+        from .semantic_plan import object_bounds
+        candidates=[]
+        for i,a in enumerate(plan['objects']):
+            lo,hi=object_bounds(a,h)
+            for b in plan['objects'][:i]:
+                blo,bhi=object_bounds(b,h)
+                if (np.minimum(hi,bhi)-np.maximum(lo,blo)>.02).all():
+                    candidates.append([a['id'],b['id']])
+        plan['front_alignment']['aabb_overlap_candidates']=candidates
+        plan['front_alignment']['collision_status']='AABB candidates only; exact concave-mesh collision not certified'
+        (folder/'front_alignment.json').write_text(json.dumps(plan['front_alignment'],indent=2))
+        validate_plan(plan,check_overlap=False)
     normalized={o['id']:m for o,m in zip(plan['objects'],normalized)}
     placed={}
     contacts=[]
@@ -241,6 +259,8 @@ def assemble(plan,folder):
         layout.append(dict(name=obj['id'],label=obj['label'],kind='generated_asset',min=actual[0],max=actual[1]))
         scene.add_geometry(mesh,geom_name=obj['id'],node_name=obj['id'])
         obj['realized_dimensions']=mesh.extents.tolist()
+    if front_fit:
+        (folder/'planning/aligned_scene_plan.json').write_text(json.dumps(plan,indent=2),encoding='utf-8')
     (folder/'meshes').mkdir(exist_ok=True)
     for mesh,part in zip(geometries,components):
         mesh.export(folder/'meshes'/f'{part["name"]}.glb')
@@ -286,7 +306,7 @@ def generate_learned_scene(prompt,output,size,views,seed,room_size=None,resume=F
     config=dict(prompt=prompt,size=size,views=views,seed=seed,room_size=list(room_size) if room_size else None,planner_model=planner_model)
     if image_room:
         from .image_room import image_digest
-        config.update(mode='image-room',front_image_sha256=image_digest(front_image) if front_image else None)
+        config.update(mode='image-room',geometry_pipeline_version=14,front_image_sha256=image_digest(front_image) if front_image else None)
     folder.mkdir(parents=True,exist_ok=True)
     manifest=folder/'request.json'
     if any(folder.iterdir()):
@@ -339,7 +359,11 @@ def generate_learned_scene(prompt,output,size,views,seed,room_size=None,resume=F
             status('mesh_generation')
             run_worker([reconstruct,worker,'reconstruct',folder/'asset_job.json','--root',root],folder/'logs/reconstruct.log',backend_environment(reconstruct,environment),cwd=root)
         status('assembly')
-        mesh,components,owners,layout=assemble(plan,folder)
+        if image_room:
+            status('front_geometry_and_alignment')
+            from .front_alignment import ensure_front_geometry
+            ensure_front_geometry(folder)
+        mesh,components,owners,layout=assemble(plan,folder,front_fit=image_room)
         from .geometry import intrinsics
         cameras=learned_cameras(layout,views)
         if plan.get('reference_camera'):
@@ -349,6 +373,11 @@ def generate_learned_scene(prompt,output,size,views,seed,room_size=None,resume=F
             prefix='heldout' if i%5==2 and not target.startswith('structure_') else 'view'
             index=sum(f['split']==prefix for f in frames)
             frames.append(dict(file_path=f'{prefix}_{index:03d}.png',split=prefix,target=target,transform_matrix=pose.tolist()))
+        from .reference_coverage import protect_training_coverage
+        for frame in frames:
+            frame['K']=plan['reference_intrinsics'] if frame['target']=='front' and plan.get('reference_intrinsics') else intrinsics(size).tolist()
+        coverage=protect_training_coverage(mesh,components,owners,frames,size)
+        (folder/'reference_coverage.json').write_text(json.dumps(coverage,indent=2))
         render_job=dict(folder=str(folder),size=size,K=intrinsics(size).tolist(),frames=frames,plan=plan)
         (folder/'render_job.json').write_text(json.dumps(render_job,indent=2))
         status('physical_references',cameras=len(frames))
@@ -359,7 +388,12 @@ def generate_learned_scene(prompt,output,size,views,seed,room_size=None,resume=F
         if image_room:
             result.update(mode='image_room_mesh_v12',generation_source='image_room_provenance.json',
                           input_image='source_front.png',proposal_images_are_training_targets=False)
+            result['front_alignment']='front_alignment.json'
             (folder/'scene.json').write_text(json.dumps(result,indent=2))
+            from .front_alignment import audit_front
+            audit=audit_front(folder)
+            if not audit['passed']:
+                raise ValueError('Front alignment silhouette gate failed; inspect front_silhouette_audit.json before GS training')
         (folder/'status.json').write_text(json.dumps(dict(stage='references_ready',success=True),indent=2))
         return result
     except Exception as error:

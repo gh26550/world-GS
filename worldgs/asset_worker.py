@@ -37,10 +37,22 @@ def segment(job, root):
             candidates=[supplied]
         for candidate in candidates:
             image = Image.open(candidate).convert('RGB')
-            with torch.inference_mode():
-                state = processor.set_image(image)
-                state = processor.set_text_prompt(prompt=entry['label'],state=state)
+            prompts=[entry['label']]
+            if re.search(r'armchair',entry['label'],re.I):prompts.append('chair')
+            for text_prompt in prompts:
+                with torch.inference_mode():
+                    state = processor.set_image(image)
+                    state = processor.set_text_prompt(prompt=text_prompt,state=state)
+                masks=state.get('masks')
+                if masks is not None and len(masks):break
             masks = state.get('masks')
+            if (masks is None or not len(masks)) and candidate==supplied:
+                # source_crop adds a known 32px white margin around a detected object.
+                # Use the detected crop extent, never a fabricated foreground mask.
+                with torch.inference_mode():
+                    state=processor.set_image(image)
+                    state=processor.add_geometric_prompt([.5,.5,(image.width-64)/image.width,(image.height-64)/image.height],True,state)
+                masks=state.get('masks');text_prompt='detected source-crop box'
             if masks is None or not len(masks):
                 errors.append(candidate.name+': object not detected')
                 continue
@@ -59,7 +71,7 @@ def segment(job, root):
             Image.fromarray(rgba).save(folder/'object.png')
             (folder/'segmentation.json').write_text(json.dumps(dict(candidate=candidate.name,label=entry['label'],
                 confidence=float(scores[order[0]]),foreground_fraction=float(mask.mean()),
-                detected_instances=len(masks),unselected_instances_masked_out=len(extra),backend='SAM3'),indent=2))
+                segmentation_prompt=text_prompt,detected_instances=len(masks),unselected_instances_masked_out=len(extra),backend='SAM3'),indent=2))
             print('Segmented '+entry['id'],flush=True)
             break
         else:

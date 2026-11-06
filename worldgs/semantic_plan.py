@@ -91,7 +91,7 @@ def object_bounds(obj, height):
     return center-extent/2,center+extent/2
 
 
-def validate_plan(plan):
+def validate_plan(plan, *, check_overlap=True):
     schema={'style':str,'room':dict,'objects':list,'requirements':list,'relations':list,
             'lighting':dict,'assumptions':list,'unsupported':list}
     for key,kind in schema.items():
@@ -108,6 +108,9 @@ def validate_plan(plan):
     from .window_geometry import window_bounds
     window_bounds(plan['room'])
     objects = plan['objects']
+    eye=np.asarray(plan.get('reference_camera',{}).get('eye',[0.,0.,0.]),float)
+    if eye.shape!=(3,) or not np.isfinite(eye).all() or (np.abs(eye)>=size/2).any():
+        raise ValueError('Invalid reference camera position')
     if not isinstance(objects,list) or not 1 <= len(objects) <= 24:
         raise ValueError('Scene needs 1–24 explicit object instances')
     resolve_supports(plan)
@@ -126,10 +129,10 @@ def validate_plan(plan):
         lo,hi = object_bounds(obj,size[1])
         if (lo < -size/2-.001).any() or (hi > size/2+.001).any():
             raise ValueError('Object outside room: '+name)
-        if (lo < .2).all() and (hi > -.2).all():
+        if (lo < eye+.2).all() and (hi > eye-.2).all():
             raise ValueError('Object encloses front camera: '+name)
         for other,(a,b) in bounds.items():
-            if (np.minimum(hi,b)-np.maximum(lo,a) > .02).all():
+            if check_overlap and (np.minimum(hi,b)-np.maximum(lo,a) > .02).all():
                 raise ValueError('Object collision: '+name+' / '+other)
         bounds[name] = lo,hi
     for obj in objects:
@@ -303,9 +306,14 @@ def plan_with_llm(prompt, output, room_size=None, model_id=MODEL, visual_observa
                     plan['room']['size']=list(room_size)
                 plan=repair_layout(normalize_size_locks(plan,prompt))
                 validation = validate_plan(plan)
-                audit_raw = ask([dict(role='system',content='Audit scene JSON against the ORIGINAL user prompt. Return ONLY {"missing":[],"contradictions":[]}. Check requested object counts and all spatial, appearance and lighting requirements. Objects requested ON a table or shelf MUST have support set to that object ID, not floor; next_to alone does not satisfy on. Do not treat planner assumptions as user requests. Report actual omissions only.'),
+                audit_raw = ask([dict(role='system',content='Audit scene JSON against the ORIGINAL user prompt. Return ONLY {"missing":[],"contradictions":[]}. Check requested object counts and all spatial, appearance and lighting requirements. Objects requested ON a table or shelf MUST have support set to that object ID, not floor; next_to alone does not satisfy on. Do not treat planner assumptions as user requests. Report actual omissions only. An ID already present in scene.objects is NOT a missing object. The scene requirements and assumptions are planner output, NOT additional user requests. For each omission cite the exact phrase in the original prompt that requires it. If an existing object has incorrect appearance, report it under contradictions rather than missing.'),
                                  dict(role='user',content=json.dumps(dict(original_prompt=prompt,scene=plan),ensure_ascii=False))],900)
                 audit = extract_json(audit_raw)
+                existing={o['id'] for o in plan['objects']}
+                if any(isinstance(item,dict) and item.get('id') in existing for item in audit.get('missing',[])):
+                    audit_raw=ask([dict(role='system',content='Recheck an inconsistent scene audit. Return ONLY {"missing":[],"contradictions":[]}. Objects whose IDs are in scene.objects cannot be missing. Compare against original_prompt only, not planner assumptions. Retain real count, appearance or spatial violations as contradictions. Do not invent requests.'),
+                                   dict(role='user',content=json.dumps(dict(original_prompt=prompt,scene=plan,previous_audit=audit),ensure_ascii=False))],900)
+                    audit=extract_json(audit_raw)
                 if any(not isinstance(audit.get(key),list) for key in ('missing','contradictions')):
                     raise ValueError('Semantic audit did not return explicit missing/contradictions lists')
                 (output/f'audit_{attempt+offset:02d}.json').write_text(json.dumps(audit,indent=2,ensure_ascii=False),encoding='utf-8')

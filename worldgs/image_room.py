@@ -45,6 +45,13 @@ def normalized_label(label):
     return label.lower().replace('bookcases','bookshelf').replace('bookshelves','bookshelf').replace('bookcase','bookshelf').replace('couch','sofa').replace('coffee table','table')
 
 
+def choose_front_detection(choices,detections,single_instance):
+    """Single instances use detector confidence; repeated instances use spatial order."""
+    if single_instance:
+        return max(choices,key=lambda i:detections[i]['score'])
+    return min(choices,key=lambda i:(detections[i]['box'][0]+detections[i]['box'][2])/2)
+
+
 def ground_completed_objects(objects, paths, seed):
     """Ground speculative objects in scene proposals, never in isolated T2I."""
     from .pipeline import Models
@@ -150,7 +157,8 @@ def plan_front(prompt, image, output, room_size, model_id):
         label = normalized_label(obj['label'])
         choices = [i for i in available if label in normalized_label(detections[i]['label'])]
         if choices:
-            index = min(choices,key=lambda i:(detections[i]['box'][0]+detections[i]['box'][2])/2)
+            count=sum(normalized_label(other['label'])==label for other in plan['objects'])
+            index = choose_front_detection(choices,detections,count==1)
             available.remove(index)
             box = np.clip(np.array(detections[index]['box'])/[image.width,image.height,image.width,image.height],0,1)
             obj.update(evidence='front',source_box=checked_box(box).tolist())
@@ -266,7 +274,9 @@ def prepare_image_room(prompt, folder, size, seed, room_size=None, model_id=None
             image = ImageOps.fit(Image.open(front_image).convert('RGB'),(size,size))
         else:
             models = Models(seed)
-            image = models.front(prompt+', interior photograph of the entire room, wide angle, coherent furniture layout',size)
+            from .room_method import whole_room_prompt
+            image = models.front(whole_room_prompt(prompt),size)
+            (folder/'source_composition.json').write_text(json.dumps(dict(version=16,prompt=whole_room_prompt(prompt),requested_composition='back-corner establishing view; not automatically certified'),indent=2))
             del models
         if np.asarray(image).mean()<1:
             raise RuntimeError('Front image is black/rejected')
