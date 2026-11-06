@@ -8,6 +8,13 @@ def main():
     inspect.add_argument('path')
     inspect.add_argument('--output',required=True)
     inspect.add_argument('--orientation-probes',action='store_true',help='Render diagnostic 180-degree bookcase rotations without changing the mesh')
+    controlled=sub.add_parser('compare-revision',help='Revise camera/depth/photographs and compare a controlled 2x2 GS experiment')
+    controlled.add_argument('path')
+    controlled.add_argument('--output',required=True)
+    controlled.add_argument('--steps',type=int,default=3000)
+    controlled.add_argument('--max-points',type=int,default=100000)
+    controlled.add_argument('--regenerate',type=int,default=16)
+    controlled.add_argument('--resume',action='store_true')
     plan = sub.add_parser('plan',help='Create and validate an LLM scene graph without generating images or meshes')
     plan.add_argument('--prompt',required=True)
     plan.add_argument('--output',required=True)
@@ -122,6 +129,9 @@ def main():
     elif command == 'inspect-front':
         from .front_inspection import inspect_front
         inspect_front(**args)
+    elif command == 'compare-revision':
+        from .controlled_revision import run
+        run(**args)
     elif command == 'generate':
         from .pipeline import generate
         generate(**args)

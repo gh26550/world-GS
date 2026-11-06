@@ -137,7 +137,13 @@ def train_mesh(path, steps, max_points):
         rendered, alpha, info = render(poses[i], t(frames[i].get('K',meta['K']))[None])
         valid = masks[i]
         weight = confidences[i][valid]
-        rgb_loss = confidence_loss((rendered[0, ..., :3][valid]-targets[i][0][valid]).abs().mean(-1), weight)*float(frames[i].get('rgb_weight',1.))
+        rgb_error=(rendered[0, ..., :3][valid]-targets[i][0][valid]).abs()
+        control=meta.get('controlled_training',{})
+        if control.get('rgb_robust'):
+            delta=float(control.get('rgb_scale',.12))
+            if not 0<delta<=1:raise ValueError('Invalid robust RGB delta')
+            rgb_error=delta*torch.log1p(rgb_error/delta)
+        rgb_loss = confidence_loss(rgb_error.mean(-1), weight)*float(frames[i].get('rgb_weight',1.))
         supported = valid & (alpha[0, ..., 0].detach() > .1)
         depth_loss = (confidence_loss((rendered[0, ..., 3].clamp_min(.05).log()-depths[i].clamp_min(.05).log()).abs()[supported], confidences[i][supported])
                       if supported.any() else rgb_loss*0)
@@ -229,6 +235,7 @@ def train_mesh(path, steps, max_points):
         mask = np.load(path/frame['mask_file'])
         valid = mask & (cpu(alpha[0, ..., 0]) > .5)
         np.save(path/f'heldout_alpha_{i:03d}.npy', cpu(alpha[0, ..., 0]))
+        np.save(path/f'heldout_depth_{i:03d}.npy', cpu(result[0,...,3]))
         evaluation.append({'camera': i, 'target': frame['target'], 'valid_fraction': float(valid.mean()),
             'rgb_l1': float(np.abs(predicted[mask]-target[mask]).mean()) if frame.get('photographic_ground_truth',True) else None,
             'alpha_below_half_on_target': float(((cpu(alpha[0, ..., 0]) < .5) & mask).sum()/max(mask.sum(), 1)),
@@ -249,7 +256,7 @@ def train_mesh(path, steps, max_points):
         'coverage_loss_weight': .05 if coverage_mode else 0., 'spatially_stratified_sampling': coverage_mode, 'spatial_budget_pruning': coverage_mode,
         'geometry_policy':meta.get('training_geometry_policy','legacy'), 'structural_depth_weight':.2 if relaxed_furniture else None, 'furniture_depth_weight':.03 if relaxed_furniture else None,
         'mesh_prior_weight': .3 if prompt_mesh else 0. if expanded else .1, 'depth_weight_schedule': 'structure=0.2; furniture=0.03' if relaxed_furniture else [.2, .2] if prompt_mesh else [.1, .02] if expanded else [.1, .1],
-        'trainable': list(parameters.keys()), 'hard_projection': False, 'densification': True, 'sh_degree': degree,
+        'controlled_training':meta.get('controlled_training'), 'trainable': list(parameters.keys()), 'hard_projection': False, 'densification': True, 'sh_degree': degree,
         'matte_room_components':matte_components,'matte_room_sh_degree':0 if matte_components else None,
         'nearest_source_distance_median': float(np.median(nearest)), 'nearest_source_distance_p95': float(np.quantile(nearest, .95)), 'log': log}
     (path/'training.json').write_text(json.dumps(training, indent=2), encoding='utf-8')

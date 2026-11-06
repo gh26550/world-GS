@@ -58,8 +58,9 @@ class LocalRuntime:
             time.sleep(.1)
         result=json.loads(done.read_text())
         if not result.get('success'):raise RuntimeError(result.get('error','Local model failed'))
-    def generate(self,guide,style,prompt,seed,output,size,kind='edit',previous=None,depth_guide=None,visible_labels=None,appearance=None,edge_guide=None):
+    def generate(self,guide,style,prompt,seed,output,size,kind='edit',previous=None,depth_guide=None,visible_labels=None,appearance=None,edge_guide=None,generation_options=None):
         request=dict(backend_root=str(self.root),workflow=str(self.workflow),port=self.port,guide=str(guide),style=str(style),prompt=prompt,seed=seed,output=str(output),size=size,visible_labels=visible_labels,appearance=appearance,edge_guide=str(edge_guide) if edge_guide else None,profile=self.image_model,kind=kind,previous=str(previous) if previous else None,depth_guide=str(depth_guide) if depth_guide else None)
+        if generation_options is not None:request['generation_options']=generation_options
         record=Path(output).with_suffix('.request.json')
         if Path(output).is_file() and record.is_file() and json.loads(record.read_text())==request:return
         if self.image_model=='controlnet':
