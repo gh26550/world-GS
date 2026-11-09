@@ -1,6 +1,7 @@
 """Local stdin worker with CPU-resident model reuse and per-request GPU release."""
 import importlib.util
 import json
+import os
 import sys
 import traceback
 from pathlib import Path
@@ -19,7 +20,7 @@ def main(script):
         except BaseException as error:
             traceback.print_exc();result={'success':False,'error':str(error)}
         finally:
-            if model is not None:
+            if model is not None and os.environ.get('WORLDGS_KEEP_MODELS_ON_GPU')!='1':
                 import torch
                 (model[0] if isinstance(model,tuple) else model).to('cpu')
                 torch.cuda.empty_cache()

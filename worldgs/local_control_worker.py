@@ -24,7 +24,11 @@ def run(r,pipe=None):
     absent=[label for label in ['sofa','chair','table','bookshelf','bed','cabinet','plant'] if label not in labels];negative='additional furniture, duplicate furniture, camera change, zoom, distorted geometry, illustration, cartoon, text, watermark, '+', '.join(absent)
     if 'NO windows' in r['prompt']:negative+=', window'
     image=Image.open(r['guide']).convert('RGB');depth=Image.open(r['depth_guide']).convert('RGB');style=Image.open(r['style']).convert('RGB');size=r['size']
-    result=pipe(prompt=prompt,negative_prompt=negative,image=image,mask_image=Image.new('L',image.size,255),control_image=[depth,Image.open(r['edge_guide']).convert('RGB')],ip_adapter_image=style,width=size,height=size,strength=strength,num_inference_steps=35,guidance_scale=6.5,controlnet_conditioning_scale=[depth_scale,boundary_scale],generator=torch.Generator('cuda').manual_seed(r['seed'])).images[0]
+    edit_mask=Image.open(options['edit_mask']).convert('L') if options.get('edit_mask') else Image.new('L',image.size,255)
+    if edit_mask.size!=image.size:raise ValueError('Edit mask changed image calibration')
+    result=pipe(prompt=prompt,negative_prompt=negative,image=image,mask_image=edit_mask,control_image=[depth,Image.open(r['edge_guide']).convert('RGB')],ip_adapter_image=style,width=size,height=size,strength=strength,num_inference_steps=35,guidance_scale=6.5,controlnet_conditioning_scale=[depth_scale,boundary_scale],generator=torch.Generator('cuda').manual_seed(r['seed'])).images[0]
+    if options.get('preserve_observed'):
+        pixels=np.array(result);known=np.asarray(edit_mask)==0;pixels[known]=np.asarray(image)[known];result=Image.fromarray(pixels)
     if np.asarray(result).mean()<1:raise RuntimeError('Local generator rejected the image')
     result.save(r['output']);Path(r['output']+'.conditioning.json').write_text(json.dumps(dict(prompt=prompt,negative_prompt=negative,depth_control_scale=depth_scale,boundary_control_scale=boundary_scale,ip_scale=ip_scale,strength=strength),indent=2))
 

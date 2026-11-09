@@ -1,0 +1,10 @@
+{
+  "source_mesh_sha256": "7d5473ce33f01b0b591857aafdd1c1564be48ae9e23e99afc6ddbfcfe40aeb65",
+  "source_image_sha256": "6980753c11b6180fc17b16bb19e6c764e7273379737fe2bbd67810d86be31296",
+  "basis": "Source-camera inspection and 180-degree orientation probe, 2026-11-06",
+  "yaw_degrees": {"bookshelf_left_00": 180},
+  "remove_components": ["window_branches"],
+  "window_panes": [2,3],
+  "side_window_from_source": true,
+  "infer_left_wall": true
+}

@@ -36,6 +36,8 @@ def transfer_appearance(hit,frame,cache,max_sources=6):
         x,y=uv[ids].T;ix,iy=np.rint(x).astype(int),np.rint(y).astype(int)
         d=entry['depth'][iy,ix]
         visible=entry['valid'][iy,ix]&(np.abs(d-camera[ids,2])<.02+.01*d)
+        if 'owner_ids' in hit and 'owner_ids' in entry:
+            visible &= entry['owner_ids'][iy,ix]==hit['owner_ids'].ravel()[ids]
         ids=ids[visible];x,y=x[visible],y[visible];ix,iy=ix[visible],iy[visible]
         if not len(ids):continue
         ray=points[ids]-source_pose[:3,3];distance=np.linalg.norm(ray,axis=1)

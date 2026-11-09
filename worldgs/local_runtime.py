@@ -61,8 +61,13 @@ class LocalRuntime:
     def generate(self,guide,style,prompt,seed,output,size,kind='edit',previous=None,depth_guide=None,visible_labels=None,appearance=None,edge_guide=None,generation_options=None):
         request=dict(backend_root=str(self.root),workflow=str(self.workflow),port=self.port,guide=str(guide),style=str(style),prompt=prompt,seed=seed,output=str(output),size=size,visible_labels=visible_labels,appearance=appearance,edge_guide=str(edge_guide) if edge_guide else None,profile=self.image_model,kind=kind,previous=str(previous) if previous else None,depth_guide=str(depth_guide) if depth_guide else None)
         if generation_options is not None:request['generation_options']=generation_options
+        import hashlib
+        inputs=[guide,style,depth_guide,edge_guide,(generation_options or {}).get('edit_mask')]
+        request['input_sha256']={str(p):hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in inputs if p and Path(p).is_file()}
         record=Path(output).with_suffix('.request.json')
-        if Path(output).is_file() and record.is_file() and json.loads(record.read_text())==request:return
+        done=record.with_suffix('.done.json')
+        complete=self.image_model!='controlnet' or (done.is_file() and json.loads(done.read_text()).get('success',False))
+        if Path(output).is_file() and record.is_file() and complete and json.loads(record.read_text())==request:return
         if self.image_model=='controlnet':
             import sys
             self.persistent_worker(sys.executable,'local_control_worker.py',request,record)

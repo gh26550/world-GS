@@ -8,6 +8,14 @@ def main():
     inspect.add_argument('path')
     inspect.add_argument('--output',required=True)
     inspect.add_argument('--orientation-probes',action='store_true',help='Render diagnostic 180-degree bookcase rotations without changing the mesh')
+    surfaces=sub.add_parser('regenerate-surfaces',help='Apply inspection-backed mesh corrections and regenerate visibility-preserving surface teachers')
+    surfaces.add_argument('source')
+    surfaces.add_argument('--output',required=True)
+    surfaces.add_argument('--correction-plan',help='JSON bound to the inspected source image and mesh hashes')
+    surfaces.add_argument('--steps',type=int,default=12000)
+    surfaces.add_argument('--max-points',type=int,default=180000)
+    surfaces.add_argument('--prepare-only',action='store_true')
+    surfaces.add_argument('--previous',help='Previous controlled comparison directory for final evidence review, adaptive retries and common-camera evaluation')
     controlled=sub.add_parser('compare-revision',help='Revise camera/depth/photographs and compare a controlled 2x2 GS experiment')
     controlled.add_argument('path')
     controlled.add_argument('--output',required=True)
@@ -129,6 +137,9 @@ def main():
     elif command == 'inspect-front':
         from .front_inspection import inspect_front
         inspect_front(**args)
+    elif command == 'regenerate-surfaces':
+        from .regenerate_surface import run
+        run(**args)
     elif command == 'compare-revision':
         from .controlled_revision import run
         run(**args)
