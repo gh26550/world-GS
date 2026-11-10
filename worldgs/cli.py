@@ -4,6 +4,11 @@ import argparse
 def main():
     parser = argparse.ArgumentParser(description='World-GS experimental scene pipeline')
     sub = parser.add_subparsers(dest='command', required=True)
+    generic=sub.add_parser('generate-consistent',help='Prompt-only image-grounded generation without room-specific correction values')
+    generic.add_argument('--prompt',required=True);generic.add_argument('--output',required=True)
+    generic.add_argument('--seed',type=int,default=0);generic.add_argument('--size',type=int,default=512)
+    generic.add_argument('--steps',type=int,default=12000);generic.add_argument('--max-points',type=int,default=180000)
+    generic.add_argument('--resume',action='store_true');generic.add_argument('--prepare-only',action='store_true')
     inspect=sub.add_parser('inspect-front',help='Read-only comparison of initial image and integrated mesh from the saved source camera')
     inspect.add_argument('path')
     inspect.add_argument('--output',required=True)
@@ -124,7 +129,10 @@ def main():
     audit.add_argument('--output', required=True)
     args = vars(parser.parse_args())
     command = args.pop('command')
-    if command=='plan':
+    if command=='generate-consistent':
+        from .generic_room import generate
+        generate(**args)
+    elif command=='plan':
         from pathlib import Path
         from .semantic_plan import plan_with_llm
         folder=Path(args.pop('output'))

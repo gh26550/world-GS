@@ -14,6 +14,7 @@ def review(path):
  folder=Path(path).resolve();recipe=json.loads((folder/'experiment.json').read_text());mesh,layout,owners=load_proxy(folder);renderer=MeshRenderer(mesh,layout['components'],owners);assessment=json.loads((folder/'assessment.json').read_text());rows=assessment['views'];changes=[]
  for f,row in zip(recipe['cameras'],rows):
   baseline=row.get('original_depth_assessment',row['assessment'])
+  if not baseline.get('layout',{}).get('passed',True):continue
   if baseline['passed']:continue
   d=folder/'references'/f['id'];photo=np.array(Image.open(d/'photo.png'));guide=np.array(Image.open(d/'proxy.png'));known=np.array(Image.open(d/'edit_mask.png'))==0
   if not np.array_equal(photo[known],guide[known]):raise ValueError('Claimed preserved pixels changed')

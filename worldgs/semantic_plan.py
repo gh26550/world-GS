@@ -200,6 +200,9 @@ def repair_layout(plan):
     proposed=np.array([o['position'] for o in objects],float)
     extents=[]
     for obj in objects:
+        dims=np.asarray(obj['dimensions'],float)
+        if dims.shape!=(3,) or not np.isfinite(dims).all() or (dims<=0).any():
+            raise ValueError('Invalid dimensions for '+obj['id']+': width,height,depth must all be positive finite meters; received '+str(obj['dimensions'])+'. Repair the dimensions, not just the position.')
         a,b=object_bounds(obj,h)
         extents.append((b-a)[[0,2]])
     extents=np.asarray(extents)
@@ -326,7 +329,10 @@ def plan_with_llm(prompt, output, room_size=None, model_id=MODEL, visual_observa
                 return plan
             except (ValueError,KeyError,TypeError) as error:
                 history.append(str(error))
-                messages.extend([dict(role='assistant',content=raw),dict(role='user',content='Repair the full JSON. Validation failed: '+str(error))])
+                # A full invalid answer in context makes small local models
+                # repeat the same dimensions. Retry from the original task
+                # with explicit validation feedback, preserving its counts.
+                messages=[dict(role='system',content=SYSTEM),dict(role='user',content=instruction+'\nGenerate a NEW valid plan. Previous validation error: '+str(error)+'\nAll width, height and depth values must be strictly positive. Use plausible physical proportions and fit the entire footprint inside the room. Return JSON only, no explanations.')]
         (output/'failure.json').write_text(json.dumps(dict(errors=history),indent=2))
         raise ValueError('Scene planner failed validation: '+history[-1])
     finally:

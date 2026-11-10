@@ -1,6 +1,14 @@
 import unittest,numpy as np
 from worldgs.regenerate_surface import surface_cameras,box
 class SurfaceRegenerationTest(unittest.TestCase):
+ def test_zero_depth_is_reported_before_placement_solver(self):
+  from worldgs.semantic_plan import repair_layout
+  plan=dict(style='neutral',room=dict(size=[6,3,6]),objects=[dict(id='furniture',dimensions=[2,1,0],position=[0,2],yaw=0,support='floor')])
+  with self.assertRaisesRegex(ValueError,'Invalid dimensions for furniture'):repair_layout(plan)
+ def test_hotel_furniture_gets_surface_views_without_livingroom_labels(self):
+  layout={'shapes':[dict(name='room',kind='room',min=[-4,-1.5,-4],max=[4,1.5,4]),dict(name='bed_00',kind='generated_asset',label='king bed',min=[-1,.5,1],max=[1,1.5,3]),dict(name='desk_00',kind='generated_asset',label='writing desk',min=[2,.6,-1],max=[3,1.5,0]),dict(name='chair_00',kind='generated_asset',label='upholstered chair',min=[1,.5,-2],max=[1.5,1.5,-1.5])]}
+  cameras=surface_cameras(layout,96);self.assertEqual(len(cameras),233)
+  self.assertEqual({f['focus_object'] for f in cameras if f['camera_kind']=='surface_targeted'},{'bed_00','desk_00','chair_00'})
  def test_surface_camera_budget_and_object_targets(self):
   from worldgs.room_cameras import safe_eye
   layout={'shapes':[dict(name='room',kind='room',min=[-3,-1.5,-3],max=[3,1.5,3]),dict(name='sofa',label='sofa',min=[-1,.5,1],max=[1,1.5,2]),dict(name='shelf',label='bookshelf',min=[-2,-1,2],max=[-1.3,1.5,2.7]),dict(name='table',label='coffee table',min=[-.6,.9,-.6],max=[.6,1.5,.4])]}

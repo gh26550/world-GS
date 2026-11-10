@@ -18,7 +18,9 @@ def run(r,pipe=None):
     strength=float(options.get('strength',.7));ip_scale=float(options.get('ip_scale',.2));depth_scale=float(options.get('depth_scale',1.4));boundary_scale=float(options.get('boundary_scale',1.0))
     if not 0<strength<=1 or not 0<=ip_scale<=1 or not 0<=depth_scale<=2 or not 0<=boundary_scale<=2:raise ValueError('Invalid generation controls')
     pipe.set_ip_adapter_scale(ip_scale)
-    labels=list(dict.fromkeys(r.get('visible_labels') or []));words={'bookshelf':'bookshelves filled with books','sofa':'leather sofa','table':'wooden coffee table','rug':'woven area rug','window':'window with daylight through glass'};visible=', '.join(words.get(label,label) for label in labels) if labels else 'empty room surfaces, no furniture'
+    # Categories identify instances; materials/design come from this scene's
+    # image and plan, never from the previous living-room prompt.
+    labels=list(dict.fromkeys(r.get('visible_labels') or []));words={'bookshelf':'bookshelves filled with books','window':'window with daylight through glass'};visible=', '.join(words.get(label,label) for label in labels) if labels else 'empty room surfaces, no furniture'
     prompt='Photorealistic interior photograph, '+visible+'. '+r.get('appearance','beige plaster, wood floor')+'. Warm daylight, realistic materials. Preserve the existing camera, positions, sizes and clipped furniture.'
     prompt=pipe.tokenizer.decode(pipe.tokenizer.encode(prompt,add_special_tokens=False)[:75])
     absent=[label for label in ['sofa','chair','table','bookshelf','bed','cabinet','plant'] if label not in labels];negative='additional furniture, duplicate furniture, camera change, zoom, distorted geometry, illustration, cartoon, text, watermark, '+', '.join(absent)

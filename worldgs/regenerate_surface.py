@@ -100,7 +100,9 @@ def surface_cameras(layout,size,count=233):
  frames=dense_camera_plan(layout['shapes'],size,count);room=layout['shapes'][0];lo,hi=np.array(room['min']),np.array(room['max']);targets=[]
  for shape in layout['shapes'][1:]:
   from .layout_consistency import category
-  if category(shape.get('label','')) not in ['bookshelf','sofa','table']:continue
+  # Target any reconstructed furniture, including unseen prompt categories.
+  # Thin floor coverings have no useful orbit of their own.
+  if shape.get('kind') not in (None,'generated_asset') or category(shape.get('label',''))=='rug':continue
   center=(np.array(shape['min'])+np.array(shape['max']))/2
   for height in [1.05,1.85]:
    for i in range(16):
@@ -113,10 +115,11 @@ def surface_cameras(layout,size,count=233):
  for name in dict.fromkeys(f['focus_object'] for f in targets):
   group=[f for f in targets if f['focus_object']==name];indices=np.linspace(0,len(group)-1,min(8,len(group))).astype(int);chosen.extend(group[i] for i in indices)
  for f in chosen:f['file_path']=f['id']+'.png'
+ chosen=chosen[:count]
  return frames[:count-len(chosen)]+chosen
 
 
-def run(source,output,steps=12000,max_points=180000,prepare_only=False,correction_plan=None,previous=None):
+def run(source,output,steps=12000,max_points=180000,prepare_only=False,correction_plan=None,previous=None,validated_proxy=False):
  from .local_room import load_proxy
  from .mesh_scene import MeshRenderer
  from .reference_pipeline import initialize_experiment,package_dataset,boundaries,uses_rgb
@@ -124,8 +127,27 @@ def run(source,output,steps=12000,max_points=180000,prepare_only=False,correctio
  from .appearance_reference import appearance_atlas
  from .local_runtime import LocalRuntime
  from .room_verification import camera_context
- src=Path(source).resolve();out=Path(output).resolve();proxy=correct_geometry(src,out.with_name(out.name+'_proxy'),correction_plan);original=json.loads((proxy/'scene.json').read_text());mesh,layout,owners=load_proxy(proxy);size=original['size'];frames=json.loads((out/'experiment.json').read_text())['cameras'] if (out/'experiment.json').exists() else surface_cameras(layout,size);renderer=MeshRenderer(mesh,layout['components'],owners);runtime=LocalRuntime(out/'logs',image_model='controlnet')
- recipe=dict(version=7,source=str(proxy),model_profile='controlnet',models=runtime.preflight(),size=size,seed=original['seed'],attempts=2,cameras=frames,mesh_sha256=digest(proxy/'scene_mesh.glb'),source_sha256=digest(proxy/'source_front.png'),rgb_target=200,camera_count=233,collect_all_planned=True,validation='physical_depth_v4_plus_visible_surface_preservation')
+ src=Path(source).resolve();out=Path(output).resolve()
+ if validated_proxy:
+  from .front_alignment import audit_front
+  if correction_plan:raise ValueError('Fresh validated proxy cannot use a scene-specific correction plan')
+  proxy=src;audit=audit_front(proxy)
+  if not audit['passed']:raise ValueError('Initial-image silhouette gate failed; correct generic alignment before collecting teachers')
+ else:proxy=correct_geometry(src,out.with_name(out.name+'_proxy'),correction_plan)
+ original=json.loads((proxy/'scene.json').read_text());mesh,layout,owners=load_proxy(proxy);size=original['size'];frames=json.loads((out/'experiment.json').read_text())['cameras'] if (out/'experiment.json').exists() else surface_cameras(layout,size);renderer=MeshRenderer(mesh,layout['components'],owners);runtime=LocalRuntime(out/'logs',image_model='controlnet')
+ if validated_proxy:
+  initial=original['frames'][0];hit=renderer.render(np.array(initial['K']),np.array(initial['transform_matrix']),size);Image.fromarray(hit['rgb']).save(proxy/'corrected_front_mesh.png')
+  dump(proxy/'geometry_correction.json',dict(method='generic image-grounded mesh reconstruction and front alignment',source_image_sha256=digest(proxy/'source_front.png'),mesh_sha256=digest(proxy/'scene_mesh.glb'),scene_specific_corrections=False,front_audit=audit))
+ if validated_proxy and not (out/'experiment.json').exists():
+  # Grow observations from neighbouring views, rather than jumping between walls.
+  source_pose=np.asarray(original['frames'][0]['transform_matrix']);ordered=[];remaining=list(frames);last=source_pose
+  while remaining:
+   def distance(f):
+    pose=np.asarray(f['transform_matrix']);return np.linalg.norm(pose[:3,3]-last[:3,3])+1.5*(1-np.clip(pose[:3,2]@last[:3,2],-1,1))
+   index=min(range(len(remaining)),key=lambda i:distance(remaining[i]));chosen=remaining.pop(index);ordered.append(chosen);last=np.asarray(chosen['transform_matrix'])
+  frames=ordered
+ recipe=dict(version=8 if validated_proxy else 7,source=str(proxy),model_profile='controlnet',models=runtime.preflight(),size=size,seed=original['seed'],attempts=2,cameras=frames,mesh_sha256=digest(proxy/'scene_mesh.glb'),source_sha256=digest(proxy/'source_front.png'),rgb_target=200,camera_count=233,collect_all_planned=True,validation='physical_depth_v4_plus_visible_surface_preservation')
+ if validated_proxy:recipe['scene_specific_corrections']=False
  initialize_experiment(proxy,out,recipe,(out/'experiment.json').exists())
  # Initial photograph is an observation of the corrected shared mesh, not a plane.
  initial=original['frames'][0];source_hit=renderer.render(np.array(initial['K']),np.array(initial['transform_matrix']),size);source_rgb=np.asarray(Image.open(out/'source_front.png').convert('RGB'));conf=np.full((size,size),.65,np.float32)
@@ -170,6 +192,12 @@ def run(source,output,steps=12000,max_points=180000,prepare_only=False,correctio
      if check['passed']:break
     if not checks:
      shutil.copy2(d/'proxy.png',photo);check=dict(passed=False,score=0.,groups=[],reason='Image model rejected all attempts; proxy is a geometry-only placeholder')
+    if validated_proxy and checks:
+     # Depth agreement alone cannot reject missing/duplicated furniture.
+     from .room_verification import verify_layout
+     runtime.layout(photo,objects,d/'layout_detection.json');detected=json.loads((d/'layout_detection.json').read_text())
+     layout_check=verify_layout(objects,detected['detections'],np.asarray(Image.open(photo)),hit=hit,owners=owners,predicted_depth=np.load(d/'predicted.npy'))
+     check=dict(check,depth_passed=check['passed'],layout=layout_check,passed=check['passed'] and layout_check['passed'])
     # Defer uncertainty; never treat the RGB target count as a reason to pass.
     row=dict(camera=f['id'],image=str(photo.relative_to(out)),assessment=check,rgb_teacher=check['passed'],preserved_fraction=float(known.mean()),attempts=len(checks),evidence={str(photo.relative_to(out)):digest(photo)})
     dump(record,row)
@@ -186,7 +214,7 @@ def run(source,output,steps=12000,max_points=180000,prepare_only=False,correctio
  order=sorted(range(len(results)),key=lambda i:(frames[i]['camera_kind']!='surface_targeted',i));selected=[i for i in order if results[i]['assessment']['passed'] and results[i].get('rgb_eligible',True)][:199]
  for i,row in enumerate(results):row['rgb_teacher']=i in selected
  dump(out/'assessment.json',dict(complete=True,ready=len(selected)==199,views=results,rgb_teacher_count=len(selected)+1,rgb_target=200))
- if previous:
+ if previous or validated_proxy:
   from .surface_finish import finish
   return finish(out,previous,steps,max_points)
  if len(selected)<199:

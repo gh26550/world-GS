@@ -78,7 +78,8 @@ class LocalRuntime:
         else:self.worker(self.depth_python,'local_depth_worker.py',request,Path(output).with_suffix('.request.json'))
     def layout(self,image,objects,output):
         import sys
-        request=dict(image=str(image),objects=[dict(label=o['label'],box=np_box(o['box'])) for o in objects],labels=['sofa','chair','table','bookshelf','bed','cabinet','rug','window'],output=str(output))
+        labels=list(dict.fromkeys([o['label'] for o in objects]+['sofa','chair','table','bookshelf','bed','cabinet','rug','window']))
+        request=dict(image=str(image),objects=[dict(label=o['label'],box=np_box(o['box'])) for o in objects],labels=labels,output=str(output))
         self.worker(sys.executable,'local_layout_worker.py',request,Path(output).with_suffix('.request.json'))
     def close(self):
         for proc,log in self.model_workers.values():

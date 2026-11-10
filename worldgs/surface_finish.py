@@ -27,6 +27,9 @@ def finish(path,previous,steps=12000,max_points=180000,allow_partial_rgb=False):
       if 'Local generator rejected the image' not in str(error):raise
       attempted.append(dict(camera=f['id'],attempt=attempt,rejected=str(error)));continue
      prediction=d/f'repair_depth_{attempt:02d}.npy';runtime.depth(photo,f['K'][0][0],prediction);check=assess_v4(hit,np.load(d/'proxy_depth.npy'),np.load(prediction),np.array(Image.open(photo)),owners,layout['components']);attempted.append(dict(camera=f['id'],attempt=attempt,passed=check['passed'],score=check['score']))
+     if recipe.get('scene_specific_corrections') is False:
+      from .room_verification import verify_layout
+      runtime.layout(photo,objects,d/f'repair_layout_{attempt:02d}.json');detected=json.loads((d/f'repair_layout_{attempt:02d}.json').read_text());lc=verify_layout(objects,detected['detections'],np.asarray(Image.open(photo)),hit=hit,owners=owners,predicted_depth=np.load(prediction));check.update(depth_passed=check['passed'],layout=lc,passed=check['passed'] and lc['passed'])
      if check['passed']:
       old=d/'pre_repair_photo.png'
       if not old.exists():shutil.copy2(d/'photo.png',old)
@@ -55,7 +58,7 @@ def finish(path,previous,steps=12000,max_points=180000,allow_partial_rgb=False):
   from .train import train
   train(out,steps,max_points);dump(marker,dict(signature=signature,record=record))
  from .surface_evaluation import evaluate
- metrics=evaluate(out,previous);dump(out/'generation_result.json',dict(complete=True,rgb_teachers=count,cameras=len(frames),targeted_cameras=sum(f['camera_kind']=='surface_targeted' for f in frames),steps=steps,initial_points=max_points,corrected_geometry=json.loads((src/'geometry_correction.json').read_text()),independent_evaluation=metrics,limitations=['Geometry, teacher selection and training budget all changed from previous run','Depth metrics use the corrected scaffold; not independent real-world truth']))
+ metrics=evaluate(out,previous);dump(out/'generation_result.json',dict(complete=True,rgb_teachers=count,cameras=len(frames),targeted_cameras=sum(f['camera_kind']=='surface_targeted' for f in frames),steps=steps,initial_points=max_points,corrected_geometry=json.loads((src/'geometry_correction.json').read_text()),independent_evaluation=metrics,limitations=['Depth metrics use the inferred scaffold; not independent real-world truth','A different prompt is a generalization example, not a controlled improvement comparison']))
  return metrics
 
 if __name__=='__main__':
