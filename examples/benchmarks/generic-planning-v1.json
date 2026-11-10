@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "scope": "Planning-stage comparison only; does not measure completed GS quality",
+  "settings": {
+    "size": 512,
+    "cameras": 233,
+    "rgb_teachers": 200,
+    "steps": 12000,
+    "max_points": 180000,
+    "seed": 11010
+  },
+  "models": [
+    {
+      "id": "Qwen/Qwen2.5-3B-Instruct",
+      "quantization": "none"
+    },
+    {
+      "id": "Qwen/Qwen2.5-7B-Instruct",
+      "quantization": "4bit"
+    }
+  ],
+  "cases": [
+    {
+      "id": "hotel",
+      "prompt": "A boutique hotel guest room with one king-size bed, beige upholstered headboard, white duvet and two large pillows, two dark oak bedside tables, one compact oak writing desk and one upholstered desk chair, a large window with linen curtains, cream walls and natural oak floor. No people or extra beds."
+    },
+    {
+      "id": "livingroom",
+      "prompt": "A contemporary living room with one fabric sofa, one rectangular coffee table, two wooden bookcases and one armchair. White walls, oak floor and soft daylight from a large window. No people, no additional large furniture."
+    },
+    {
+      "id": "office",
+      "prompt": "A compact modern office with two separate writing desks, two office chairs and one storage cabinet. Pale gray walls, matte concrete floor and diffuse daylight from a large window. No people, beds, sofas or extra desks."
+    }
+  ],
+  "policy": {
+    "scene_specific_repairs": false,
+    "threshold_changes_per_case": false,
+    "failures_retained": true,
+    "selection": "Compare all cases before selecting a model; success is necessary but not proof of generalization",
+    "next_evaluation": "Freeze selected method and use unseen prompt variants for full-scene evaluation"
+  }
+}

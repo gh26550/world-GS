@@ -170,7 +170,24 @@ def generate_legacy(prompt, output, size=512, views=24, seed=0, demo=False):
     return metadata
 
 
-def generate(prompt, output, size=512, views=24, seed=0, demo=False, mode='image-room', front_image=None, room_size=None, layout_file=None, resume=False, planner_model=None):
+def generate(prompt, output, size=512, views=24, seed=0, demo=False, mode='room-local', front_image=None, room_size=None, layout_file=None, resume=False, planner_model=None,rgb_target=None,camera_count=None):
+    if rgb_target is not None and mode!='room-local':raise ValueError('RGB target is supported by room-local only')
+    if camera_count is not None and mode!='room-local':raise ValueError('Camera count is supported by room-local only')
+    if mode == 'room-local':
+        if demo or layout_file:raise ValueError('room-local requires image-based room reconstruction')
+        from .local_room import generate_local_scene
+        options={}
+        if rgb_target is not None:options['rgb_target']=rgb_target
+        if camera_count is not None:options['camera_count']=camera_count
+        return generate_local_scene(prompt,output,size,views,seed,front_image,room_size,resume,planner_model,**options)
+    if mode == 'photo-room':
+        if demo or layout_file:
+            raise ValueError('photo-room requires real image and mesh generation')
+        from .learned_scene import generate_learned_scene
+        from .appearance import synthesize_appearance
+        scaffold=Path(output).with_name(Path(output).name+'_scaffold')
+        generate_learned_scene(prompt,scaffold,size,views,seed,room_size,resume,planner_model,image_room=True,front_image=front_image)
+        return synthesize_appearance(scaffold,output,size=size,resume=resume)
     if mode == 'image-room':
         if demo or layout_file:
             raise ValueError('image-room requires real room images; demo/layout overrides are not supported')

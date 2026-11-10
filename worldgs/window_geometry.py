@@ -42,7 +42,7 @@ def add_window(room,parts,components):
     panel=box([lo[0]-.15,lo[1]-.15,l/2+.48],[hi[0]+.15,hi[1]+.15,l/2+.5],[215,229,234,255])
     rng=np.random.default_rng(71)
     branches=[]
-    for _ in range(30):
+    for _ in range(30 if room.get('outdoor_branches',True) else 0):
         x=rng.uniform(lo[0],hi[0])
         y=rng.uniform(lo[1]-.15,hi[1]+.15)
         end=np.array([x+rng.uniform(-.35,.35),y-rng.uniform(.25,.7),l/2+.26])
@@ -53,8 +53,8 @@ def add_window(room,parts,components):
         branch.apply_translation((start+end)/2)
         branch.visual.face_colors=[89,80,65,255]
         branches.append(branch)
-    for name,mesh,material in [('window_frame',trimesh.util.concatenate(frames),'window_frame'),
-                               ('window_outdoor',panel,'window_sky'),
-                               ('window_branches',trimesh.util.concatenate(branches),'window_branches')]:
+    additions=[('window_frame',trimesh.util.concatenate(frames),'window_frame'),('window_outdoor',panel,'window_sky')]
+    if branches:additions.append(('window_branches',trimesh.util.concatenate(branches),'window_branches'))
+    for name,mesh,material in additions:
         parts.append(mesh)
         components.append(dict(name=name,group='window',material=material,faces=len(mesh.faces),bounds=mesh.bounds.tolist()))

@@ -1,0 +1,379 @@
+"""Mesh -> mutually conditioned photographic references -> GS-ready dataset."""
+import gc
+import hashlib
+import json
+import shutil
+from pathlib import Path
+import numpy as np
+from PIL import Image
+import trimesh
+from scipy.ndimage import binary_erosion
+from .mesh_scene import MeshRenderer
+from .reference_coverage import scaled_intrinsics
+from .appearance_geometry import transfer_appearance,pose_distance,geometry_check,structural_planarity,semantic_support
+
+
+def sha(path):return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+def projection_fingerprint(meta):
+    rows=[dict(file_path=f['file_path'],K=f.get('K',meta.get('K')),pose=f.get('transform_matrix')) for f in meta['frames']+meta['heldout_frames']]
+    return hashlib.sha256(json.dumps(rows,sort_keys=True).encode()).hexdigest()
+
+
+def synthesize_appearance(path,output,size=512,pilot_views=None,resume=False,_completion_round=0,whole_view=False):
+    source=Path(path).resolve();folder=Path(output).resolve()
+    if source==folder or source in folder.parents or folder in source.parents:
+        raise ValueError('Appearance output must be a separate sibling run')
+    if size<256 or size%8:raise ValueError('Appearance size must be >=256 and divisible by 8')
+    original=json.loads((source/'scene.json').read_text())
+    if original.get('appearance_audit'):raise ValueError('Use an original mesh-reference run, not an already stylized result')
+    request=dict(version=23 if whole_view else 21,source=str(source),mesh_sha256=sha(source/'scene_mesh.glb'),
+                 front_sha256=sha(source/'source_front.png'),camera_sha256=sha(source/'scene.json'),
+                 size=size,seed=original['seed'],controlnet='lllyasviel/control_v11f1p_sd15_depth',
+                 base='stable-diffusion-v1-5/stable-diffusion-inpainting',ip_adapter='h94/IP-Adapter:ip-adapter_sd15.bin',
+                 ip_scale=.5 if whole_view else .2,min_depth_edge_recall=.55,source_mask_policy='bookshelf_composite_hull_v1',view_order='source_then_translated_object_pairs_v16',
+                 diffusion_strength=[.95,.90,.85] if whole_view else [.75,.65,.55],validation='world_surface_ownership_instance_depth_v21',source_projection_policy='disabled_for_novel_views' if whole_view else 'instance_masks_and_unmatched_boxes',
+                 appearance_policy='whole_view_proxy_with_source_identity_v23' if whole_view else 'source_instance_calibrated_regional_synthesis_v18')
+    if whole_view:request['whole_view']=True
+    manifest=folder/'appearance_request.json'
+    if folder.exists() and any(folder.iterdir()):
+        if not resume or not manifest.exists() or json.loads(manifest.read_text())!=request:
+            raise FileExistsError('Use an empty output, or --resume with the identical appearance request')
+    else:
+        folder.mkdir(parents=True,exist_ok=True)
+        for name in ('assets','planning','materials','room_images'):
+            if (source/name).exists():shutil.copytree(source/name,folder/name)
+        for name in ('scene_mesh.glb','mesh_geometry.npz','layout.json','source_front.png','image_room_provenance.json','front_alignment.json','request.json','reference_coverage.json','source_composition.json'):
+            if (source/name).exists():shutil.copy2(source/name,folder/name)
+        manifest.write_text(json.dumps(request,indent=2))
+    (folder/'appearance_records').mkdir(exist_ok=True);(folder/'appearance_candidates').mkdir(exist_ok=True)
+    (folder/'logs').mkdir(exist_ok=True)
+    def status(stage,**extra):
+        record=dict(stage=stage,success=None);record.update(extra)
+        (folder/'status.json').write_text(json.dumps(record,indent=2))
+    status('appearance_preparation')
+    geometry=np.load(folder/'mesh_geometry.npz');owners=geometry['owners']
+    mesh=trimesh.Trimesh(geometry['vertices'],geometry['faces'],process=False)
+    layout=json.loads((folder/'layout.json').read_text());components=layout['components']
+    renderer=MeshRenderer(mesh,components,owners)
+    job=json.loads((source/'render_job.json').read_text());job.update(folder=str(folder),size=size)
+    job['K']=scaled_intrinsics(original['K'],original['size'],size).tolist()
+    frames=[]
+    for split,items in [('view',original['frames']),('heldout',original['heldout_frames'])]:
+        for old in items:
+            f={k:v for k,v in old.items() if k in ('target','file_path','transform_matrix')}
+            f.update(split=split,K=scaled_intrinsics(old.get('K',original['K']),original['size'],size).tolist(),
+                     confidence_file=Path(f['file_path']).stem+'_confidence.npy')
+            frames.append(f)
+    job['frames']=frames
+    (folder/'render_job.json').write_text(json.dumps(job,indent=2))
+    style=Image.open(folder/'source_front.png').convert('RGB').resize((size,size),Image.Resampling.LANCZOS)
+    front=frames[0];front_hit=renderer.render(np.asarray(front['K']),np.asarray(front['transform_matrix']),size)
+    original_owner=np.full((size,size),-1,int)
+    from .front_alignment import source_mask
+    plan=json.loads((folder/'planning/image_room_plan.json').read_text())
+    names={c['name']:i for i,c in enumerate(components)}
+    from .layout_consistency import layout_contract,projected_objects,synthesis_regions,layout_check,calibrate_source_parts,structure_palette_guide,surface_regions,ownership_check,source_exclusion_mask
+    contract=layout_contract(geometry,components,plan,request['mesh_sha256'],request['front_sha256'])
+    contract['prompt']=original['prompt']
+    contract_file=folder/'layout_contract.json'
+    if contract_file.exists() and json.loads(contract_file.read_text())!=contract:
+        raise ValueError('Shared world layout changed during reference synthesis')
+    contract_file.write_text(json.dumps(contract,indent=2))
+    object_labels={o['id']:o['label'] for o in contract['objects']}
+    vocabulary=sorted(set(object_labels.values())|{'sofa','chair','table','bookshelf','bed','cabinet'})
+    source_masks={};furniture_envelope=np.zeros((size,size),bool)
+    object_styles={o['id']:Image.open(folder/'assets'/o['id']/'reference_asset.png').convert('RGB') for o in plan['objects'] if (folder/'assets'/o['id']/'reference_asset.png').exists()}
+    calibration_file=folder/'source_instance_parts.json'
+    calibration=json.loads(calibration_file.read_text()) if calibration_file.exists() else None
+    for obj in plan['objects']:
+        if obj.get('evidence')=='front':
+            mask=source_mask(folder,obj,(size,size))
+            source_masks[obj['id']]=mask.copy()
+            if 'bookshelf' in obj['id'] and mask.any():
+                from scipy.spatial import ConvexHull
+                from PIL import ImageDraw
+                y,x=np.where(mask);points=np.column_stack([x,y])
+                hull=ConvexHull(points);canvas=Image.new('L',(size,size))
+                ImageDraw.Draw(canvas).polygon([tuple(p) for p in points[hull.vertices]],fill=255)
+                mask=np.asarray(canvas)>0
+            original_owner[mask]=names[obj['id']]
+    detections_file=folder/'planning/front_detections.json'
+    if detections_file.exists():
+        furniture_envelope=source_exclusion_mask((size,size),plan['objects'],json.loads(detections_file.read_text()),original['size'])
+    hit_owner=owners[np.maximum(front_hit['faces'],0)]
+    source_valid=(front_hit['faces']>=0)&np.where(original_owner>=0,hit_owner==original_owner,hit_owner<6)
+    source_valid &= (hit_owner>=6)|~furniture_envelope
+    source_valid=binary_erosion(source_valid,iterations=1)
+    cache=[dict(frame=front,depth=front_hit['depth'],valid=source_valid,rgb=np.asarray(style),
+                confidence=np.ones((size,size)),source_anchor=True)]
+    remaining=[i for i,f in enumerate(frames) if f['split']=='view'];order=[];last=front
+    while remaining:
+        index=min(remaining,key=lambda i:pose_distance(last['transform_matrix'],frames[i]['transform_matrix']))
+        remaining.remove(index);order.append(index);last=frames[index]
+    priority=[]
+    for target in ('front','room_yaw_0_pitch_0','room_yaw_180_pitch_0','room_yaw_90_pitch_0','room_yaw_270_pitch_0'):
+        priority += [i for i in order if frames[i]['target']==target]
+    # Inspect translated furniture views before spending the pilot on empty walls.
+    groups={}
+    for i in order:
+        if frames[i]['target'].startswith('object_detail_'):
+            groups.setdefault(frames[i]['target'].rsplit('_',1)[0],[]).append(i)
+    translated=[]
+    for indices in groups.values():
+        if len(indices)>1:
+            a,b=max(((a,b) for j,a in enumerate(indices) for b in indices[j+1:]),
+                    key=lambda pair:np.linalg.norm(np.asarray(frames[pair[0]]['transform_matrix'])[:3,3]-np.asarray(frames[pair[1]]['transform_matrix'])[:3,3]))
+            translated.extend([a,b])
+        else:translated.extend(indices)
+    priority=[0]+translated+[i for i in priority if i!=0]
+    priority=list(dict.fromkeys(priority))
+    order=priority+[i for i in order if i not in priority]
+    order += [i for i,f in enumerate(frames) if f['split']=='heldout']
+    # A later completion round can use every already validated TRAINING image.
+    # Heldout images remain excluded even when they are available on disk.
+    for frame in frames:
+        record_file=folder/'appearance_records'/(Path(frame['file_path']).stem+'.json')
+        if frame['split']!='view' or not record_file.exists():continue
+        old_record=json.loads(record_file.read_text())
+        if not old_record.get('passed') or sha(folder/frame['file_path'])!=old_record['image_sha256']:continue
+        hit=renderer.render(np.asarray(frame['K']),np.asarray(frame['transform_matrix']),size)
+        cache.append(dict(frame=frame,depth=hit['depth'],valid=hit['faces']>=0,
+                          rgb=np.asarray(Image.open(folder/frame['file_path']).convert('RGB')),
+                          confidence=np.load(folder/frame['confidence_file'])))
+    records=[];rejections=[];models=None
+    try:
+        for position,index in enumerate(order):
+            if pilot_views is not None and position>=pilot_views:
+                status('appearance_pilot_ready',completed=len(records),total=len(frames),trainable=False)
+                return dict(pilot=True,completed=len(records),total=len(frames),output=str(folder))
+            frame=frames[index];stem=Path(frame['file_path']).stem
+            record_file=folder/'appearance_records'/f'{stem}.json'
+            hit=front_hit if index==0 else renderer.render(np.asarray(frame['K']),np.asarray(frame['transform_matrix']),size)
+            status('appearance_synthesis',completed=position,total=len(frames),frame=frame['file_path'])
+            if record_file.exists():
+                record=json.loads(record_file.read_text())
+                if not record.get('passed') or sha(folder/frame['file_path'])!=record['image_sha256']:
+                    raise ValueError('Cached appearance image failed its recorded fingerprint')
+                rgb=np.asarray(Image.open(folder/frame['file_path']).convert('RGB'))
+                confidence=np.load(folder/frame['confidence_file'])
+            else:
+                if whole_view:
+                    transferred=None;known=np.zeros((size,size),bool);confidence=np.zeros((size,size),np.float32)
+                else:transferred,known,confidence=transfer_appearance(hit,frame,cache)
+                guide=np.array(Image.open(source/frame['file_path']).convert('RGB').resize((size,size),Image.Resampling.LANCZOS))
+                floor_ids=[i for i,c in enumerate(components) if c['name']=='room_1_1']
+                floor=(hit['faces']>=0)&np.isin(owners[np.maximum(hit['faces'],0)],floor_ids)
+                guide=structure_palette_guide(guide,hit,owners)
+                if not whole_view:guide[known]=transferred[known]
+                from .room_method import protection_mask
+                known=protection_mask(hit,frame,known,front['transform_matrix'],owners)
+                visible_ids=owners[hit['faces'][hit['faces']>=0]]
+                descriptions=[]
+                for obj in job['plan']['objects']:
+                    if (visible_ids==names[obj['id']]).sum()>=size*size*.01:
+                        descriptions.append('bookshelves filled with books' if 'bookshelf' in obj['id'] else obj['label'])
+                room=job['plan']['room']
+                material=', '.join(' '.join(str(room[name]).split()[:3])+' '+label for name,label in [('ceiling','ceiling'),('walls','walls'),('floor','floor')])
+                style_words=' '.join(str(job['plan'].get('style','')).split()[:8])
+                prompt='Photorealistic interior photograph of the same room. '+material+'. '+style_words+'. '
+                prompt += ('Visible furniture: '+', '.join(descriptions)+'.') if descriptions else 'Plain room surfaces, no additional furniture.'
+                if index==0:
+                    guide=np.asarray(style).copy()
+                    known=hit['faces']>=0
+                projected=projected_objects(hit,owners,components,object_labels,min_pixels=max(16,size*size//4096))
+                for obj in projected:
+                    if not obj['requires_detection']:
+                        known |= obj['mask']
+                    obj['description']=next(row['description'] for row in contract['objects'] if row['id']==obj['id'])
+                regions=surface_regions(projected,hit['depth'].shape)
+                if index!=0:
+                    editable=np.zeros(hit['depth'].shape,bool)
+                    for region in regions:editable |= region['mask']
+                    known=np.zeros_like(editable) if whole_view else ~editable
+                if whole_view and index!=0:
+                    regions=None
+                    prompt=('Photograph, same room, exact guide camera, furniture positions, orientations, silhouettes and occlusions. Reference photo materials and identity only, never its viewpoint. '+', '.join(descriptions)+'. Brown leather, books on wooden shelves, wood floor, beige plaster, warm daylight. No added furniture.')
+                attempts=[];guide_check=None;guide_detections=None
+                for attempt in range(1 if index==0 else 3):
+                    if models is None:
+                        from .appearance_models import AppearanceModels
+                        models=AppearanceModels(original['seed'])
+                    if guide_check is None:
+                        guide_check=geometry_check(hit['depth'],models.inverse_depth(guide),hit['faces'],owners,tolerance=round(10*size/512),generated_mask=~known)
+                        guide_detections=models.detections(guide)
+                    try:
+                        if index==0:
+                            rgb=np.asarray(style).copy()
+                        else:
+                            rgb=models.generate(prompt if whole_view else prompt+' Same furniture identity, materials and lighting as the original room photograph. Preserve the camera perspective and object silhouettes.',guide,known,hit['depth'],style,index,attempt,regions=regions,object_styles=object_styles,whole_view=whole_view)
+                    except RuntimeError as error:
+                        if 'black/rejected image' not in str(error):raise
+                        check=dict(passed=False,generation_rejected=True,attempt=attempt)
+                        attempts.append(check)
+                        continue
+                    inverse=models.inverse_depth(rgb)
+                    check=geometry_check(hit['depth'],inverse,hit['faces'],owners,tolerance=round(10*size/512),min_recall=min(.55,max(.05,.9*guide_check['depth_edge_recall'])),generated_mask=~known)
+                    check['guide_edge_recall']=guide_check['depth_edge_recall']
+                    check['edge_threshold_policy']='min(0.55, max(0.05, 0.9 * guide recall)); calibrated for depth-estimator observability'
+                    check['planarity']=structural_planarity(inverse,hit['faces'],owners,~known)
+                    detections,recognition_conflicts=models.layout_detections(rgb,projected,vocabulary)
+                    if index==0 and calibration is None:
+                        calibration=calibrate_source_parts(projected,detections,hit['depth'].shape,source_masks)
+                        calibration['source_sha256']=request['front_sha256']
+                        calibration_file.write_text(json.dumps(calibration,indent=2))
+                    check['instance_recognition']=layout_check(projected,detections,hit['depth'].shape,source_parts=(calibration or {}).get('parts',{}))
+                    check['instance_recognition']['recognition_conflicts']=recognition_conflicts
+                    check['layout']=check['instance_recognition'].copy() if whole_view else ownership_check(rgb,guide,regions)
+                    instance_depth=[]
+                    guide_inverse=models.inverse_depth(guide)
+                    for obj in projected:
+                        if not obj['requires_detection']:continue
+                        baseline=geometry_check(hit['depth'],guide_inverse,hit['faces'],owners,tolerance=round(10*size/512),generated_mask=obj['mask'])
+                        per_object=geometry_check(hit['depth'],inverse,hit['faces'],owners,tolerance=round(10*size/512),min_recall=min(.55,max(.15,.8*baseline['depth_edge_recall'])),generated_mask=obj['mask'])
+                        instance_depth.append(dict(id=obj['id'],**per_object))
+                    check['layout']['instance_depth']=instance_depth
+                    check['layout']['passed']=check['layout']['passed'] and all(r['passed'] for r in instance_depth)
+                    check['semantics']=dict(passed=check['layout']['passed'],note='Instance layout check replaces seating-family and weak support checks')
+                    check['passed']=check['passed'] and check['planarity']['passed'] and check['semantics']['passed']
+                    check['protected_pixel_l1']=float(np.abs(rgb[known].astype(float)-guide[known]).mean()/255) if known.any() else 0.
+                    check['passed']=check['passed'] and check['protected_pixel_l1']<=1/255
+                    if index==0:
+                        check['mesh_alignment_diagnostic_passed']=bool(check['passed'])
+                        check['passed']=bool(np.array_equal(rgb,np.asarray(style)))
+                        check['layout']=dict(passed=check['passed'],policy='Immutable original source image; source/mesh alignment recorded separately')
+                        check['source_anchor_policy']='Exact source image; mesh mismatch is diagnostic, not a reason to replace the source'
+                    attempts.append(check)
+                    Image.fromarray(rgb).save(folder/'appearance_candidates'/f'{stem}_attempt_{attempt:02d}.png')
+                    if check['passed']:break
+                if not check['passed']:
+                    (folder/'appearance_records'/f'{stem}_rejected.json').write_text(json.dumps(attempts,indent=2))
+                    rejections.append(dict(frame=frame['file_path'],target=frame['target'],attempts=attempts))
+                    print('Rejected appearance reference: '+frame['file_path'],flush=True)
+                    if index==0:raise ValueError('Initial image and shared layout disagree; inspect appearance_records/view_000_rejected.json before training')
+                    continue
+                confidence=np.where(known,np.maximum(confidence,.55),.55).astype(np.float32)
+                Image.fromarray(rgb).save(folder/frame['file_path'])
+                Image.fromarray(guide).save(folder/'appearance_candidates'/f'{stem}_guide.png')
+                Image.fromarray(np.uint8(known)*255).save(folder/'appearance_candidates'/f'{stem}_known.png')
+                np.save(folder/frame['confidence_file'],confidence)
+                record=dict(frame=frame['file_path'],target=frame['target'],split=frame['split'],passed=True,
+                            inherited_fraction=float(known.mean()),generated_fraction=float((~known).mean()),
+                            image_sha256=sha(folder/frame['file_path']),attempts=attempts,prompt=prompt,
+                            geometry='shared exact mesh; generated depth used for checking only')
+                record_file.write_text(json.dumps(record,indent=2))
+            record['confidence_file']=frame['confidence_file']
+            record['confidence_sha256']=sha(folder/frame['confidence_file'])
+            record_file.write_text(json.dumps(record,indent=2))
+            records.append(record)
+            # Heldout synthesis must never affect any training reference.
+            if frame['split']=='view':
+                cache=[e for e in cache if e.get('source_anchor') or e['frame']['file_path']!=frame['file_path']]
+                cache.append(dict(frame=frame,depth=hit['depth'],valid=hit['faces']>=0,rgb=rgb,confidence=confidence))
+            print(f'Appearance reference {position+1}/{len(frames)} {frame["file_path"]}: inherited={record["inherited_fraction"]:.1%}',flush=True)
+        del models;models=None;gc.collect()
+        import torch
+        torch.cuda.empty_cache()
+        status('appearance_reference_packaging')
+        from .reference_coverage import audit_planned_coverage,protect_training_coverage
+        accepted={r['frame'] for r in records}
+        planned=job['frames']
+        job['frames']=[f for f in planned if f['file_path'] in accepted]
+        split_report=protect_training_coverage(mesh,components,owners,job['frames'],size,rename_files=False)
+        (folder/'appearance_split.json').write_text(json.dumps(split_report,indent=2))
+        for record in records:
+            record['split']=next(f['split'] for f in job['frames'] if f['file_path']==record['frame'])
+        training=[f for f in job['frames'] if f['split']=='view']
+        from .room_method import parallax_audit
+        parallax=parallax_audit(renderer,components,owners,training)
+        (folder/'parallax_audit.json').write_text(json.dumps(parallax,indent=2))
+        if not parallax['passed']:
+            raise ValueError('Insufficient translated-view supervision per object; inspect parallax_audit.json')
+        coverage=audit_planned_coverage(mesh,components,owners,planned,training,size)
+        (folder/'appearance_coverage.json').write_text(json.dumps(coverage,indent=2))
+        if not coverage['passed']:
+            if _completion_round<2:
+                print('Completing remaining surfaces with the expanded validated training appearance cache',flush=True)
+                return synthesize_appearance(source,folder,size=size,resume=True,_completion_round=_completion_round+1,whole_view=whole_view)
+            raise ValueError('Accepted photographic views leave unseen surfaces; inspect appearance_coverage.json')
+        if sum(f['split']=='heldout' for f in job['frames'])<4:raise ValueError('Insufficient accepted heldout photographic references')
+        (folder/'render_job.json').write_text(json.dumps(job,indent=2))
+        from .learned_references import save_references
+        meta=save_references(folder,original['prompt'],original['seed'],size,mesh,components,owners,job)
+        probes=[]
+        for i,frame in enumerate(planned):
+            hit=renderer.render(np.asarray(frame['K']),np.asarray(frame['transform_matrix']),size)
+            filename=f'coverage_probe_{i:03d}_mask.npy'
+            np.save(folder/filename,hit['faces']>=0)
+            probes.append(dict(target=frame['target'],K=frame['K'],transform_matrix=frame['transform_matrix'],mask_file=filename))
+        meta['coverage_probe_frames']=probes
+        for key in ('mode','generation_source','input_image','front_alignment'):
+            if key in original:meta[key]=original[key]
+        meta['generation_method']='source photo -> shared world layout -> visible-instance surface refinement with immutable architecture -> GS with local detail freedom'
+        if whole_view:meta['generation_method']='source photo -> shared mesh -> unprojected whole-view proxy guide + source identity conditioning -> layout/depth acceptance -> GS'
+        meta['parallax_audit']='parallax_audit.json'
+        meta['training_geometry_policy']='shared_layout_local_detail_v17'
+        meta['layout_contract']='layout_contract.json'
+        meta.update(appearance_audit='appearance_audit.json',reference_source=('Whole-view depth ControlNet + source identity IP-Adapter + instance-position/scale acceptance gate' if whole_view else 'Shared object layout + region-conditioned depth ControlNet + source-photo IP-Adapter + layout acceptance gate'),
+                    proposal_images_are_training_targets=False,generated_appearance_images_are_training_targets=True)
+        for frame in meta['frames']+meta['heldout_frames']:
+            frame['reference_source']='mesh-conditioned synthesized photograph; exact shared mesh depth/normal/ID'
+        meta['limitations']=[line for line in meta['limitations'] if line!='Heldout mesh renders are not independent real-world ground truth']
+        meta['limitations'] += ['Generated references are hypotheses, not captured or independent ground truth',
+                               'Mesh topology and missing architectural objects are not repaired by appearance synthesis',
+                               'Depth-edge recall is a heuristic, not a guarantee of multi-view or semantic consistency']
+        audit=dict(version=23 if whole_view else 21,source_parts_sha256=sha(calibration_file),layout_contract_sha256=sha(contract_file),complete=True,passed=all(r['passed'] for r in records),mesh_digest=meta['mesh_digest'],
+                   parallax_sha256=sha(folder/'parallax_audit.json'),
+                   request_sha256=sha(manifest),projection_sha256=projection_fingerprint(meta),views=records,
+                   rejected_views=rejections,completion_round=_completion_round+1,split_selection=split_report,planned_views=len(planned),coverage=coverage,heldout_used_for_training_conditioning=False)
+        (folder/'appearance_audit.json').write_text(json.dumps(audit,indent=2))
+        (folder/'scene.json').write_text(json.dumps(meta,indent=2))
+        from .front_alignment import audit_front
+        if meta.get('front_alignment') and not audit_front(folder)['passed']:raise ValueError('Front projection gate failed')
+        html_file=folder/'references.html'
+        text=html_file.read_text().replace('360-degree mesh references','Mesh-guided photographic references').replace('Physical RGB references used for Gaussian training.','Generated photographic RGB references used for Gaussian training; not captured ground truth.')
+        html_file.write_text(text)
+        status('appearance_ready',completed=len(records),total=len(frames),success=True)
+        return meta
+    except Exception as error:
+        (folder/'status.json').write_text(json.dumps(dict(stage='appearance_failed',success=False,error=str(error)),indent=2))
+        raise
+
+
+def validate_appearance(folder,meta):
+    folder=Path(folder)
+    if not meta.get('appearance_audit'):
+        if (folder/'appearance_request.json').exists():raise ValueError('Appearance references are incomplete')
+        return
+    audit=json.loads((folder/meta['appearance_audit']).read_text())
+    if not audit.get('complete') or not audit.get('passed') or audit.get('mesh_digest')!=meta['mesh_digest']:
+        raise ValueError('Appearance references are incomplete, rejected or stale')
+    if audit.get('version',15)>=18:
+        if not (folder/'source_instance_parts.json').exists() or sha(folder/'source_instance_parts.json')!=audit.get('source_parts_sha256'):
+            raise ValueError('Source instance ownership calibration changed')
+    if audit.get('version',15)>=17:
+        contract=folder/'layout_contract.json'
+        if not contract.exists() or sha(contract)!=audit.get('layout_contract_sha256'):
+            raise ValueError('Shared layout contract changed after validation')
+        if meta.get('training_geometry_policy')!='shared_layout_local_detail_v17':
+            raise ValueError('Shared layout training policy changed')
+        if any(not r['attempts'][-1].get('layout',{}).get('passed') for r in audit['views']):
+            raise ValueError('Reference layout consistency has not passed')
+    if audit.get('version',15)>=16:
+        report=folder/'parallax_audit.json'
+        if not report.exists() or sha(report)!=audit.get('parallax_sha256') or not json.loads(report.read_text()).get('passed'):
+            raise ValueError('Translated-view supervision audit is missing, failed or changed')
+    if audit['request_sha256']!=sha(folder/'appearance_request.json'):raise ValueError('Appearance request changed after validation')
+    request=json.loads((folder/'appearance_request.json').read_text())
+    if request.get('whole_view'):
+        for row in audit['views']:
+            if row.get('target')!='front' and row.get('inherited_fraction',1.)!=0.:
+                raise ValueError('Whole-view reference contains inherited pixels')
+    if audit.get('projection_sha256')!=projection_fingerprint(meta):raise ValueError('Appearance cameras changed after validation')
+    expected={f['file_path'] for f in meta['frames']+meta['heldout_frames']}
+    if {r['frame'] for r in audit['views']}!=expected:raise ValueError('Appearance audit does not cover every frame')
+    for record in audit['views']:
+        if record.get('confidence_file') and sha(folder/record['confidence_file'])!=record['confidence_sha256']:
+            raise ValueError('Appearance confidence changed after validation')
+        if not record['passed'] or sha(folder/record['frame'])!=record['image_sha256']:
+            raise ValueError('Appearance RGB changed after validation')

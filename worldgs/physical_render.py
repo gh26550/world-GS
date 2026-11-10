@@ -163,6 +163,7 @@ def render(job_file):
     camera.clip_start=.03
     camera.clip_end=100.
     for index,frame in enumerate(job['frames']):
+        camera.lens=float(frame.get('K',job['K'])[0][0])*36/job['size']
         pose=np.asarray(frame['transform_matrix'])
         matrix=blender_camera_matrix(pose)
         obj.matrix_world=Matrix(matrix.tolist())
