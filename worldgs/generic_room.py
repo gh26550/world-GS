@@ -7,9 +7,12 @@ def generate(prompt, output, seed=0, size=512, steps=12000, max_points=180000,
              resume=False, prepare_only=False):
     from .local_room import create_local_proxy
     from .regenerate_surface import run
+    import os
     folder=Path(output).resolve()
     request=dict(prompt=prompt,seed=seed,size=size,steps=steps,max_points=max_points,
-                 cameras=233,rgb_target=200,scene_specific_corrections=False)
+                 cameras=233,rgb_target=200,scene_specific_corrections=False,
+                 semantic_planner=os.environ.get('WORLDGS_PLANNER_MODEL','Qwen/Qwen2.5-3B-Instruct'),
+                 planner_quantization=os.environ.get('WORLDGS_PLANNER_QUANTIZATION','none'))
     marker=folder.with_name(folder.name+'_generic_request.json')
     if marker.exists() and (not resume or json.loads(marker.read_text())!=request):
         raise FileExistsError('Use a new output, or --resume with the identical generic request')

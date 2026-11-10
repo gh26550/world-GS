@@ -1,6 +1,7 @@
 """LLM scene graph with explicit requirements and geometric validation."""
 import gc
 import json
+import os
 import re
 from pathlib import Path
 import numpy as np
@@ -269,14 +270,23 @@ def repair_layout(plan):
     return plan
 
 
-def plan_with_llm(prompt, output, room_size=None, model_id=MODEL, visual_observation=None):
+def plan_with_llm(prompt, output, room_size=None, model_id=None, visual_observation=None,quantization=None):
     import torch
     from transformers import AutoTokenizer,AutoModelForCausalLM
     output = Path(output)
     output.mkdir(parents=True,exist_ok=True)
+    model_id=model_id or os.environ.get('WORLDGS_PLANNER_MODEL',MODEL)
+    quantization=quantization or os.environ.get('WORLDGS_PLANNER_QUANTIZATION','none')
+    if quantization not in ('none','4bit'):raise ValueError('Planner quantization must be none or 4bit')
     tokenizer = AutoTokenizer.from_pretrained(model_id)
-    model = AutoModelForCausalLM.from_pretrained(model_id,torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-                                               attn_implementation='sdpa').to('cuda' if torch.cuda.is_available() else 'cpu').eval()
+    options=dict(torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,attn_implementation='sdpa')
+    if quantization=='4bit':
+        if not torch.cuda.is_available():raise ValueError('The 4bit planner profile requires CUDA')
+        from transformers import BitsAndBytesConfig
+        options.update(quantization_config=BitsAndBytesConfig(load_in_4bit=True,bnb_4bit_quant_type='nf4',bnb_4bit_compute_dtype=torch.float16),device_map={'':0})
+    model = AutoModelForCausalLM.from_pretrained(model_id,**options)
+    if quantization=='none':model=model.to('cuda' if torch.cuda.is_available() else 'cpu')
+    model.eval()
     def ask(messages,limit=6000):
         encoded = tokenizer.apply_chat_template(messages,tokenize=True,add_generation_prompt=True,return_tensors='pt',return_dict=True).to(model.device)
         with torch.inference_mode():
@@ -322,7 +332,7 @@ def plan_with_llm(prompt, output, room_size=None, model_id=MODEL, visual_observa
                 (output/f'audit_{attempt+offset:02d}.json').write_text(json.dumps(audit,indent=2,ensure_ascii=False),encoding='utf-8')
                 if audit.get('missing') or audit.get('contradictions'):
                     raise ValueError('Semantic audit: '+json.dumps(audit,ensure_ascii=False))
-                plan.update(prompt=prompt,planner=model_id,validation=validation,semantic_audit=audit,
+                plan.update(prompt=prompt,planner=model_id,planner_quantization=quantization,planner_revision=getattr(model.config,'_commit_hash',None),validation=validation,semantic_audit=audit,
                             semantic_completeness_guaranteed=False)
                 (output/'scene_plan.json').write_text(json.dumps(plan,indent=2,ensure_ascii=False),encoding='utf-8')
                 (output/'failure.json').unlink(missing_ok=True)
