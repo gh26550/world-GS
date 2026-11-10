@@ -4,6 +4,7 @@ This file intentionally depends only on each backend's own environment. It is
 launched by argument arrays, never a model-generated shell command.
 """
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -71,7 +72,9 @@ def segment(job, root):
             Image.fromarray(rgba).save(folder/'object.png')
             (folder/'segmentation.json').write_text(json.dumps(dict(candidate=candidate.name,label=entry['label'],
                 confidence=float(scores[order[0]]),foreground_fraction=float(mask.mean()),
-                segmentation_prompt=text_prompt,detected_instances=len(masks),unselected_instances_masked_out=len(extra),backend='SAM3'),indent=2))
+                segmentation_prompt=text_prompt,detected_instances=len(masks),unselected_instances_masked_out=len(extra),backend='SAM3',
+                mask_sha256=hashlib.sha256((folder/'mask.png').read_bytes()).hexdigest(),
+                image_sha256=hashlib.sha256((folder/'image.png').read_bytes()).hexdigest()),indent=2))
             print('Segmented '+entry['id'],flush=True)
             break
         else:

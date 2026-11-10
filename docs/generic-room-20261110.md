@@ -48,3 +48,23 @@ training. Initial prompt adherence still needs visual review.
 Run started 2026-11-10: `runs/hotel_generic_20261110`. See its preparation and
 finish logs for current progress. Do not interpret this start record as a
 completed generation result.
+
+## Generalization boundary after the hotel diagnostic
+
+The named-object diagnostic (`hotel_generic_v2_20261110`) is excluded from
+generalization evidence. It did not produce a completed GS. The proposed
+category-specific mask-hole fill was removed from the common path. A fresh
+`hotel_generic_clean_20261110` run uses the public common generator with no
+mask edits or previous asset reuse. Its completion must be checked separately.
+
+The common path now refines all observed meshes using occlusion-aware visible
+silhouettes with the same objective, iteration budget and constraints. Rigid
+pose and uniform scale are fitted per input; furniture shape is not deformed.
+A source-image gate runs before expensive reference collection. SAM input
+image/mask hashes are recorded and checked to detect accidental manual edits.
+The generic preparation path omits duplicate temporary Cycles teacher renders,
+preserves the planned floor material and omits fabricated outdoor branches.
+
+These are shared algorithm changes, not evidence of general performance. Freeze
+settings before comparing multiple prompt families, report failures/time as
+well as visual fidelity, and reserve unseen prompts for evaluation.

@@ -218,8 +218,11 @@ def assemble(plan,folder,*,front_fit=False):
         obj['dimensions']=mesh.extents.tolist()
         obj['uniform_scale']=scale
         normalized.append(mesh)
-    plan=repair_layout(plan)
-    validate_plan(plan)
+    # A reconstructed bed/table can have a very different depth from the text
+    # prior. Do not reject/pack its AABB before fitting the observed image.
+    if not (front_fit and (folder/'generic_silhouette_fit.json').exists()):
+        plan=repair_layout(plan)
+        validate_plan(plan)
     if front_fit:
         from .front_alignment import fit_front
         fit_front(plan,normalized,folder)
@@ -315,7 +318,8 @@ def generate_learned_scene(prompt,output,size,views,seed,room_size=None,resume=F
     manifest.write_text(json.dumps(config,indent=2))
     (folder/'logs').mkdir(exist_ok=True)
     def status(stage,**details):
-        record=dict(stage=stage,success=None,updated_at=datetime.now(timezone.utc).isoformat(),**details)
+        record=dict(stage=stage,success=None,updated_at=datetime.now(timezone.utc).isoformat())
+        record.update(details)
         (folder/'status.json').write_text(json.dumps(record,indent=2))
         print('WorldGS stage: '+stage,flush=True)
     try:
@@ -358,11 +362,20 @@ def generate_learned_scene(prompt,output,size,views,seed,room_size=None,resume=F
         if any(not (folder/'assets'/o['id']/'asset.json').exists() for o in plan['objects']):
             status('mesh_generation')
             run_worker([reconstruct,worker,'reconstruct',folder/'asset_job.json','--root',root],folder/'logs/reconstruct.log',backend_environment(reconstruct,environment),cwd=root)
+        if image_room and os.environ.get('WORLDGS_SOURCE_SILHOUETTE_FIT')=='1':
+            import hashlib
+            for obj in plan['objects']:
+                asset=folder/'assets'/obj['id'];segmentation=json.loads((asset/'segmentation.json').read_text())
+                for field,name in [('mask_sha256','mask.png'),('image_sha256','image.png')]:
+                    if segmentation.get(field)!=hashlib.sha256((asset/name).read_bytes()).hexdigest():
+                        raise ValueError('Unverified or modified segmentation input: '+obj['id']+'/'+name+'. Do not use manually corrected assets as generalization evidence.')
         status('assembly')
         if image_room:
             status('front_geometry_and_alignment')
             from .front_alignment import ensure_front_geometry
             ensure_front_geometry(folder)
+            if os.environ.get('WORLDGS_SOURCE_SILHOUETTE_FIT')=='1':
+                (folder/'generic_silhouette_fit.json').write_text(json.dumps(dict(enabled=True,method='occlusion-aware rigid source silhouette fit')))
         mesh,components,owners,layout=assemble(plan,folder,front_fit=image_room)
         from .geometry import intrinsics
         cameras=learned_cameras(layout,views)
@@ -380,6 +393,24 @@ def generate_learned_scene(prompt,output,size,views,seed,room_size=None,resume=F
         (folder/'reference_coverage.json').write_text(json.dumps(coverage,indent=2))
         render_job=dict(folder=str(folder),size=size,K=intrinsics(size).tolist(),frames=frames,plan=plan)
         (folder/'render_job.json').write_text(json.dumps(render_job,indent=2))
+        if image_room and os.environ.get('WORLDGS_SOURCE_SILHOUETTE_FIT')=='1':
+            from .front_alignment import audit_front
+            from .teacher_geometry import mesh_digest
+            preview_meta=dict(size=size,K=render_job['K'],frames=frames,mesh_digest=mesh_digest(mesh.vertices,mesh.faces))
+            (folder/'scene.json').write_text(json.dumps(preview_meta,indent=2))
+            precheck=audit_front(folder)
+            (folder/'source_alignment_precheck.json').write_text(json.dumps(precheck,indent=2))
+            if not precheck['passed']:
+                raise ValueError('Source silhouette gate failed before expensive reference rendering')
+            # This route trains on later camera photographs, not temporary
+            # Cycles renders. Export geometry now; avoid rendering it twice.
+            preview_meta.update(mode='image_room_mesh_v12',prompt=prompt,seed=seed,demo=False,
+                generation_source='image_room_provenance.json',input_image='source_front.png',
+                front_alignment='front_alignment.json',room_size_prior=plan['room']['size'],
+                reference_source='Geometry preparation only; RGB teachers are not collected yet')
+            (folder/'scene.json').write_text(json.dumps(preview_meta,indent=2))
+            status('references_ready',success=True,geometry_only=True)
+            return preview_meta
         status('physical_references',cameras=len(frames))
         run_worker([blender,'-b','--python',Path(__file__).with_name('physical_render.py'),'--',folder/'render_job.json'],folder/'logs/render.log')
         from .learned_references import save_references

@@ -173,6 +173,10 @@ def fit_front(plan, meshes, folder, *, max_nfev=180):
             yaw_trials.append(dict(id=obj['id'],initial_yaw_degrees=float(np.rad2deg(angle)),cost=float(candidate.cost)))
             if candidate.cost<solved.cost:solved=candidate
     values=solved.x
+    silhouette_refinement=None
+    if (folder/'generic_silhouette_fit.json').exists():
+        from .silhouette_fit import refine
+        values,silhouette_refinement=refine(values,lower,upper,meshes,observed,masks,camera,residual,image.width)
     K,pose=camera(values)
     after_objective=float(np.linalg.norm(residual(values)))
     fitted_boxes=[projection(points(j,values),K,pose,size)[0] for j in range(len(observed))]
@@ -193,7 +197,7 @@ def fit_front(plan, meshes, folder, *, max_nfev=180):
         box=fitted_boxes[j]
         rows.append(dict(id=obj['id'],source_box=targets[j].tolist(),before_box=oldbox.tolist(),after_box=box.tolist(),
                          before_iou=box_iou(oldbox,targets[j]),after_iou=box_iou(box,targets[j])))
-    report=dict(yaw_multistart=yaw_trials,method='robust front reprojection with optional MoGe camera/depth/floor priors',
+    report=dict(silhouette_refinement=silhouette_refinement,yaw_multistart=yaw_trials,method='robust front reprojection with optional MoGe camera/depth/floor priors',
         reference='source segmentation, not independent 3D ground truth',floor=floor,
         objective_before=float(before),objective_after=after_objective,
         optimized_fov=float(values[0]),camera_to_world=pose.tolist(),objects=rows,

@@ -15,7 +15,15 @@ def generate(prompt, output, seed=0, size=512, steps=12000, max_points=180000,
         raise FileExistsError('Use a new output, or --resume with the identical generic request')
     marker.parent.mkdir(parents=True,exist_ok=True)
     marker.write_text(json.dumps(request,indent=2),encoding='utf-8')
-    proxy=create_local_proxy(prompt,folder,size=size,views=16,seed=seed,resume=resume)
+    # The learned-scene request guard allows a precreated folder only when its
+    # identical request exists; fresh calls therefore create the flag later.
+    import os
+    previous=os.environ.get('WORLDGS_SOURCE_SILHOUETTE_FIT')
+    os.environ['WORLDGS_SOURCE_SILHOUETTE_FIT']='1'
+    try:proxy=create_local_proxy(prompt,folder,size=size,views=16,seed=seed,resume=resume)
+    finally:
+        if previous is None:os.environ.pop('WORLDGS_SOURCE_SILHOUETTE_FIT',None)
+        else:os.environ['WORLDGS_SOURCE_SILHOUETTE_FIT']=previous
     return run(proxy,folder,steps=steps,max_points=max_points,
                validated_proxy=True,prepare_only=prepare_only)
 
